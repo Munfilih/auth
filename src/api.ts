@@ -38,10 +38,6 @@ async function request<T>(
   return payload as T;
 }
 
-export async function verifyAdmin(user: User): Promise<{ username: string }> {
-  return request('/api/admin/session', user);
-}
-
 export async function getUsers(user: User): Promise<AppUser[]> {
   return request('/api/admin/users', user);
 }

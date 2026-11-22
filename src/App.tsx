@@ -32,13 +32,13 @@ import {
   reviewActivationRequest,
   reviewDemoRequest,
   updateUser,
-  verifyAdmin,
 } from './api';
 import {
   adminLoginEmail,
   firebaseAuth,
   firebaseConfigured,
   firebaseWebConfigured,
+  verifyPortalAdmin,
 } from './firebase';
 import { FirebaseError } from 'firebase/app';
 import type { OAuthCredential, User } from 'firebase/auth';
@@ -370,7 +370,7 @@ export default function AdminPortal() {
           if (user.email?.toLowerCase() !== adminLoginEmail?.toLowerCase()) {
             throw new Error(`Use the Google account configured for ${adminLoginEmail}.`);
           }
-          return verifyAdmin(user);
+          return verifyPortalAdmin(user);
         })
         .then(async (session) => {
           setAdminUsername(session.username);
@@ -404,7 +404,7 @@ export default function AdminPortal() {
         await linkWithCredential(credential.user, pendingGoogleCredential.current);
         pendingGoogleCredential.current = null;
       }
-      const session = await verifyAdmin(credential.user);
+      const session = await verifyPortalAdmin(credential.user);
       setAdminUsername(session.username);
       setPassword('');
       setAuthUser(credential.user);
@@ -623,7 +623,7 @@ export default function AdminPortal() {
             <span><Check size={15} /> Set <code>VITE_ADMIN_LOGIN_EMAIL</code> to the Firebase Auth email for aptadmin</span>
             <span><Check size={15} /> Enable Firebase Authentication: Email/Password</span>
             <span><Check size={15} /> Firestore: create <code>portalAdmins/{'{uid}'}</code> with <code>active: true</code></span>
-            <span><Check size={15} /> Set <code>VITE_API_BASE_URL</code> to the hosted Node API; keep service-account credentials on that server</span>
+            <span><Check size={15} /> Set <code>VITE_API_BASE_URL</code> to the hosted Node API for portal data and management; keep service-account credentials on that server</span>
           </div>
           <a className="button button-primary setup-link" href="https://console.firebase.google.com/" target="_blank" rel="noreferrer">
             Open Firebase Console <ArrowUpRight size={16} />
@@ -676,7 +676,7 @@ export default function AdminPortal() {
               {loginBusy ? <LoaderCircle className="spin" size={17} /> : <span className="google-mark" aria-hidden="true">G</span>}
               {loginBusy ? 'Connecting…' : 'Continue with Google'}
             </button>
-            <p className="login-footnote"><ShieldCheck size={14} /> Admin access is verified by Firebase.</p>
+            <p className="login-footnote"><ShieldCheck size={14} /> Sign-in is verified by Firebase; the API is used for portal data and management.</p>
           </div>
         </div>
       </div>

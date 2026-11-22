@@ -21,7 +21,7 @@ This is a standalone project in `D:\aptpos-admin-portal`. It does not import, ca
 
 If the administrator already has an Email/Password account, the first Google sign-in may ask for that password to link Google to the existing Firebase account. This preserves the administrator's UID and access record; later Google sign-ins work directly.
 
-The Admin SDK service account is used only by the Node API, which defaults to `127.0.0.1:3002`. The browser app on port 3001 signs in with Firebase Auth and sends its Firebase ID token to that API. The API checks the `portalAdmins` document before managing accounts. For a hosted API, set `ADMIN_API_HOST=0.0.0.0`; the server also honors the hosting provider's `PORT` variable. If the browser app is hosted on another origin, set `VITE_API_BASE_URL` when building the frontend and add that exact origin to `ADMIN_PORTAL_ORIGINS` on the API. Do not use `*` for the allowed-origin list.
+The browser app signs in with Firebase Auth and verifies the signed-in user's own `portalAdmins/{uid}` document directly through Firestore rules. This keeps sign-in independent of the Node API. The Admin SDK service account is used only by the Node API for privileged user and request management; the API also checks the `portalAdmins` document before handling those operations. The API defaults to `127.0.0.1:3002`. For a hosted API, set `ADMIN_API_HOST=0.0.0.0`; the server also honors the hosting provider's `PORT` variable. If the browser app is hosted on another origin, set `VITE_API_BASE_URL` when building the frontend and add that exact origin to `ADMIN_PORTAL_ORIGINS` on the API. Do not use `*` for the allowed-origin list.
 
 ## Run
 
@@ -34,7 +34,7 @@ Open <http://127.0.0.1:3001> on the development computer or <http://192.168.1.11
 
 ## GitHub Pages
 
-The GitHub Actions workflow builds the Vite app (including the `/auth/` project-site base path) and deploys `dist/`. Add these repository variables under **Settings → Secrets and variables → Actions → Variables** so the hosted portal can sign in and reach its API: `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_APP_ID`, `VITE_ADMIN_LOGIN_EMAIL`, and `VITE_API_BASE_URL`. Set `VITE_API_BASE_URL` to the HTTPS URL of the separately hosted Node API. Add `https://munfilih.github.io` to that API's `ADMIN_PORTAL_ORIGINS`. GitHub Pages hosts only the frontend; it cannot run the Node API or hold Firebase Admin credentials.
+The GitHub Actions workflow builds the Vite app (including the `/auth/` project-site base path) and deploys `dist/`. Add these repository variables under **Settings → Secrets and variables → Actions → Variables**: `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_APP_ID`, `VITE_ADMIN_LOGIN_EMAIL`, and `VITE_API_BASE_URL`. Firebase Auth and the admin's own Firestore record authorize sign-in; `VITE_API_BASE_URL` points to the HTTPS URL of the separately hosted Node API used for management operations. Add `https://munfilih.github.io` to that API's `ADMIN_PORTAL_ORIGINS`. GitHub Pages hosts only the frontend; it cannot run the Node API or hold Firebase Admin credentials.
 
 ## aptPOS demo requests
 
