@@ -685,13 +685,35 @@ export default function AdminPortal() {
 
   const activeTitle =
     tab === 'current' ? 'Current Users' : tab === 'demo' ? 'Demo Users' : 'Activation Requests';
-  const resolvedTitle = tab === 'demo-requests' ? 'Demo Requests' : activeTitle;
-  const navItems: Array<{ id: PortalTab; label: string; icon: typeof Users; badge?: number }> = [
-    { id: 'current', label: 'Current Users', icon: Users },
-    { id: 'demo', label: 'Demo Users', icon: UserRoundPlus },
-    { id: 'requests', label: 'Activation Requests', icon: FileClock, badge: pendingRequests },
-    { id: 'demo-requests', label: 'Demo Requests', icon: KeyRound, badge: pendingDemoRequests },
+  const resolvedTitle = tab === 'demo-requests' ? 'Demo Key Requests' : activeTitle;
+  const navItems: Array<{
+    id: PortalTab;
+    label: string;
+    icon: typeof Users;
+    badge?: number;
+    section: 'accounts' | 'requests';
+  }> = [
+    { id: 'current', label: 'Current Users', icon: Users, section: 'accounts' },
+    { id: 'demo', label: 'Demo Users', icon: UserRoundPlus, section: 'accounts' },
+    { id: 'requests', label: 'Activation Requests', icon: FileClock, badge: pendingRequests, section: 'requests' },
+    { id: 'demo-requests', label: 'Demo Key Requests', icon: KeyRound, badge: pendingDemoRequests, section: 'requests' },
   ];
+  const accountNavItems = navItems.filter((item) => item.section === 'accounts');
+  const requestNavItems = navItems.filter((item) => item.section === 'requests');
+  const renderNavItem = (item: (typeof navItems)[number]) => {
+    const Icon = item.icon;
+    return (
+      <button
+        key={item.id}
+        className={`nav-item${tab === item.id ? ' nav-item-active' : ''}`}
+        onClick={() => { setTab(item.id); setSearch(''); }}
+      >
+        <Icon size={18} />
+        <span>{item.label}</span>
+        {item.badge ? <span className="nav-badge">{item.badge}</span> : null}
+      </button>
+    );
+  };
 
   return (
     <div className="portal-shell">
@@ -700,18 +722,11 @@ export default function AdminPortal() {
           <div className="brand-mark"><ShieldCheck size={22} /></div>
           <div><strong>aptPOS</strong><span>Admin Portal</span></div>
         </div>
-        <p className="nav-caption">WORKSPACE</p>
         <nav className="sidebar-nav" aria-label="Admin sections">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button key={item.id} className={`nav-item${tab === item.id ? ' nav-item-active' : ''}`} onClick={() => { setTab(item.id); setSearch(''); }}>
-                <Icon size={18} />
-                <span>{item.label}</span>
-                {item.badge ? <span className="nav-badge">{item.badge}</span> : null}
-              </button>
-            );
-          })}
+          <p className="nav-caption nav-group-caption">ACCOUNTS</p>
+          {accountNavItems.map(renderNavItem)}
+          <p className="nav-caption nav-group-caption">REQUESTS</p>
+          {requestNavItems.map(renderNavItem)}
         </nav>
         <div className="sidebar-bottom">
           <div className="security-note"><ShieldCheck size={16} /><span>Firebase secured<br /><small>Admin access only</small></span></div>
@@ -743,7 +758,7 @@ export default function AdminPortal() {
                   : tab === 'demo'
                     ? 'Manage demo accounts separately from current users.'
                     : tab === 'demo-requests'
-                      ? 'Review two-day demo activation and extension requests from aptPOS.'
+                      ? 'Review two-day demo key activation and extension requests from aptPOS.'
                     : 'Review and process app version activation requests.'}
               </p>
             </div>
@@ -807,13 +822,13 @@ export default function AdminPortal() {
           ) : tab === 'demo-requests' ? (
             <section className="table-card">
               <div className="table-toolbar">
-                <div><h2>Demo activation queue</h2><p>{demoRequests.length} total requests</p></div>
+                <div><h2>Demo key request queue</h2><p>{demoRequests.length} total requests</p></div>
                 <div className="request-toolbar-note"><Clock3 size={15} /> Each approved key starts a two-day demo when redeemed.</div>
               </div>
               {loadingData ? (
                 <div className="table-state"><LoaderCircle className="spin" size={21} /> Loading requests…</div>
               ) : demoRequests.length === 0 ? (
-                <div className="empty-state"><KeyRound size={25} /><strong>No demo requests yet</strong><span>Requests from aptPOS will appear here.</span></div>
+                <div className="empty-state"><KeyRound size={25} /><strong>No demo key requests yet</strong><span>Requests from aptPOS will appear here.</span></div>
               ) : (
                 <div className="table-scroll">
                   <table>

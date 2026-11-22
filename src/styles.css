@@ -82,6 +82,8 @@ code { color: #3156d3; font-size: .92em; }
 .sidebar-brand span { display: block; margin-top: 2px; color: #8a94a7; font-size: 10px; }
 .nav-caption { padding: 0 11px; margin: 0 0 10px; color: #9aa3b3; font-size: 9px; font-weight: 800; letter-spacing: 1.3px; }
 .sidebar-nav { display: grid; gap: 5px; }
+.nav-group-caption { grid-column: 1 / -1; margin-top: 14px; }
+.nav-group-caption:first-of-type { margin-top: 0; }
 .nav-item { display: flex; width: 100%; height: 44px; align-items: center; gap: 12px; padding: 0 12px; border: 0; border-radius: 9px; color: #657187; background: transparent; text-align: left; font-size: 12px; font-weight: 600; }
 .nav-item:hover { color: #34425e; background: #f6f7fb; }
 .nav-item-active { color: #3158dc; background: #edf1ff; font-weight: 700; }
@@ -209,9 +211,9 @@ tbody tr:hover { background: #fcfdff; }
     backdrop-filter: blur(20px) saturate(180%);
   }
   .sidebar-brand, .nav-caption, .sidebar-bottom { display: none; }
-  .sidebar-nav { display: grid; width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+  .sidebar-nav { display: grid; width: 100%; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
   .nav-item { position: relative; height: 54px; min-width: 0; flex-direction: column; justify-content: center; gap: 4px; padding: 4px 2px; border-radius: 12px; }
-  .nav-item > span:not(.nav-badge) { display: block; font-size: 9px; line-height: 1.1; text-align: center; }
+  .nav-item > span:not(.nav-badge) { display: block; font-size: 8px; line-height: 1.1; text-align: center; }
   .nav-item svg { width: 20px; height: 20px; flex: 0 0 auto; }
   .nav-badge { position: absolute; top: 2px; left: calc(50% + 10px); min-width: 17px; height: 17px; margin: 0; padding: 0 4px; font-size: 9px; }
   .portal-main { min-height: 100dvh; margin-left: 0; }
