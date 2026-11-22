@@ -1,0 +1,27 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isPortalAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/portalAdmins/$(request.auth.uid))
+        && get(/databases/$(database)/documents/portalAdmins/$(request.auth.uid)).data.active == true;
+    }
+
+    match /portalAdmins/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    match /appUsers/{uid} {
+      allow read, write: if isPortalAdmin();
+    }
+
+    match /activationRequests/{requestId} {
+      allow read, write: if isPortalAdmin();
+    }
+  }
+}
