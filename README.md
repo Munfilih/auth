@@ -32,6 +32,10 @@ npm run dev
 
 Open <http://127.0.0.1:3001> on the development computer or <http://192.168.1.113:3001> from a device on the same Wi-Fi network. The development command starts the API on port 3002 and the web app on port 3001. Firebase configuration is required for sign-in and data operations.
 
+## GitHub Pages
+
+The GitHub Actions workflow builds the Vite app (including the `/auth/` project-site base path) and deploys `dist/`. Add these repository variables under **Settings → Secrets and variables → Actions → Variables** so the hosted portal can sign in and reach its API: `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_APP_ID`, `VITE_ADMIN_LOGIN_EMAIL`, and `VITE_API_BASE_URL`. Set `VITE_API_BASE_URL` to the HTTPS URL of the separately hosted Node API. Add `https://munfilih.github.io` to that API's `ADMIN_PORTAL_ORIGINS`. GitHub Pages hosts only the frontend; it cannot run the Node API or hold Firebase Admin credentials.
+
 ## aptPOS demo requests
 
 The **Demo Requests** section receives initial two-day demo requests and expired-demo extension requests from aptPOS. Approving a request generates a one-time, system-code-bound key. Copy and share that key with the requester; it is not stored in readable form and is shown only in the approval response. The two-day period starts when the requester redeems the key. Extensions also grant two days from redemption.
