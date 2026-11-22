@@ -26,8 +26,11 @@ import {
   createUser,
   deleteUser,
   getActivationRequests,
+  getDemoRequests,
   getUsers,
+  regenerateDemoRequestKey,
   reviewActivationRequest,
+  reviewDemoRequest,
   updateUser,
   verifyAdmin,
 } from './api';
@@ -44,7 +47,9 @@ import type {
   AppUser,
   AppVersion,
   CreateUserInput,
+  DemoRequest,
   UpdateUserInput,
+  ReviewedDemoRequest,
   UserRole,
   UserType,
 } from './types';
@@ -58,7 +63,7 @@ import {
   signOut,
 } from 'firebase/auth';
 
-type PortalTab = 'current' | 'demo' | 'requests';
+type PortalTab = 'current' | 'demo' | 'requests' | 'demo-requests';
 type FlashMessage = { kind: 'success' | 'error'; text: string } | null;
 
 const APP_VERSIONS: AppVersion[] = ['Soft', 'Silver', 'Standard'];
@@ -295,6 +300,8 @@ export default function AdminPortal() {
   const [tab, setTab] = useState<PortalTab>('current');
   const [users, setUsers] = useState<AppUser[]>([]);
   const [requests, setRequests] = useState<ActivationRequest[]>([]);
+  const [demoRequests, setDemoRequests] = useState<DemoRequest[]>([]);
+  const [issuedDemoKeys, setIssuedDemoKeys] = useState<Record<string, string>>({});
   const [loadingData, setLoadingData] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [pageError, setPageError] = useState('');
@@ -307,12 +314,14 @@ export default function AdminPortal() {
     setLoadingData(true);
     setPageError('');
     try {
-      const [loadedUsers, loadedRequests] = await Promise.all([
+      const [loadedUsers, loadedRequests, loadedDemoRequests] = await Promise.all([
         getUsers(user),
         getActivationRequests(user),
+        getDemoRequests(user),
       ]);
       setUsers(loadedUsers);
       setRequests(loadedRequests);
+      setDemoRequests(loadedDemoRequests);
     } catch (error) {
       setPageError(messageFrom(error));
     } finally {
@@ -432,6 +441,8 @@ export default function AdminPortal() {
     setAuthUser(null);
     setUsers([]);
     setRequests([]);
+    setDemoRequests([]);
+    setIssuedDemoKeys({});
     setTab('current');
   };
 
@@ -528,6 +539,55 @@ export default function AdminPortal() {
     }
   };
 
+  const handleReviewDemoRequest = async (request: DemoRequest, status: 'approved' | 'rejected') => {
+    if (!authUser) return;
+    setActionBusy(true);
+    try {
+      const result: ReviewedDemoRequest = await reviewDemoRequest(authUser, request.id, status);
+      const demoKey = result.demoKey;
+      if (demoKey) {
+        setIssuedDemoKeys((keys) => ({ ...keys, [request.id]: demoKey }));
+      }
+      await loadData(authUser);
+      notify(
+        'success',
+        status === 'approved'
+          ? 'Demo request approved. Copy the generated key and share it with the requester.'
+          : 'Demo request rejected.'
+      );
+    } catch (error) {
+      notify('error', messageFrom(error));
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleCopyDemoKey = async (demoKey: string) => {
+    try {
+      if (!navigator.clipboard) throw new Error('Clipboard access is unavailable in this browser.');
+      await navigator.clipboard.writeText(demoKey);
+      notify('success', 'Demo key copied.');
+    } catch (error) {
+      notify('error', messageFrom(error));
+    }
+  };
+
+  const handleRegenerateDemoKey = async (request: DemoRequest) => {
+    if (!authUser || !window.confirm('Generate a replacement key? Any previously shared key for this request will stop working.')) {
+      return;
+    }
+    setActionBusy(true);
+    try {
+      const { demoKey } = await regenerateDemoRequestKey(authUser, request.id);
+      setIssuedDemoKeys((keys) => ({ ...keys, [request.id]: demoKey }));
+      notify('success', 'Replacement demo key generated. Copy and share it with the requester.');
+    } catch (error) {
+      notify('error', messageFrom(error));
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   const currentUsers = useMemo(
     () => users.filter((user) => user.userType === 'current'),
     [users]
@@ -543,6 +603,7 @@ export default function AdminPortal() {
     );
   });
   const pendingRequests = requests.filter((request) => request.status === 'pending').length;
+  const pendingDemoRequests = demoRequests.filter((request) => request.status === 'pending').length;
 
   if (!firebaseConfigured) {
     return (
@@ -623,10 +684,12 @@ export default function AdminPortal() {
 
   const activeTitle =
     tab === 'current' ? 'Current Users' : tab === 'demo' ? 'Demo Users' : 'Activation Requests';
+  const resolvedTitle = tab === 'demo-requests' ? 'Demo Requests' : activeTitle;
   const navItems: Array<{ id: PortalTab; label: string; icon: typeof Users; badge?: number }> = [
     { id: 'current', label: 'Current Users', icon: Users },
     { id: 'demo', label: 'Demo Users', icon: UserRoundPlus },
     { id: 'requests', label: 'Activation Requests', icon: FileClock, badge: pendingRequests },
+    { id: 'demo-requests', label: 'Demo Requests', icon: KeyRound, badge: pendingDemoRequests },
   ];
 
   return (
@@ -658,7 +721,7 @@ export default function AdminPortal() {
 
       <main className="portal-main">
         <header className="topbar">
-          <div className="breadcrumb"><span>Workspace</span><span className="crumb-slash">/</span><strong>{activeTitle}</strong></div>
+          <div className="breadcrumb"><span>Workspace</span><span className="crumb-slash">/</span><strong>{resolvedTitle}</strong></div>
           <div className="admin-chip">
             <span className="admin-avatar">{adminUsername.slice(0, 1).toUpperCase()}</span>
             <span><strong>{adminUsername}</strong><small>Application admin</small></span>
@@ -672,12 +735,14 @@ export default function AdminPortal() {
           <div className="page-title-row">
             <div>
               <p className="eyebrow">USER MANAGEMENT</p>
-              <h1>{activeTitle}</h1>
+              <h1>{resolvedTitle}</h1>
               <p className="muted-copy">
                 {tab === 'current'
                   ? 'Manage active app accounts and their access.'
                   : tab === 'demo'
                     ? 'Manage demo accounts separately from current users.'
+                    : tab === 'demo-requests'
+                      ? 'Review two-day demo activation and extension requests from aptPOS.'
                     : 'Review and process app version activation requests.'}
               </p>
             </div>
@@ -685,11 +750,11 @@ export default function AdminPortal() {
               <button className="button button-primary" onClick={() => setRequestEditorOpen(true)} disabled={!users.length}>
                 <Plus size={17} /> New request
               </button>
-            ) : (
+            ) : tab === 'current' || tab === 'demo' ? (
               <button className="button button-primary" onClick={() => setUserEditor({ user: null, type: tab })}>
                 <Plus size={17} /> Add {tab === 'demo' ? 'demo user' : 'user'}
               </button>
-            )}
+            ) : null}
           </div>
 
           <div className="stats-grid">
@@ -702,7 +767,7 @@ export default function AdminPortal() {
           {flash && <div className={`flash-message flash-${flash.kind}`} role="status">{flash.kind === 'success' ? <Check size={16} /> : <CircleAlert size={16} />}{flash.text}</div>}
           {pageError && <div className="flash-message flash-error" role="alert"><CircleAlert size={16} />{pageError}</div>}
 
-          {tab !== 'requests' ? (
+          {tab === 'current' || tab === 'demo' ? (
             <section className="table-card">
               <div className="table-toolbar">
                 <div><h2>{tab === 'demo' ? 'Demo account directory' : 'User directory'}</h2><p>{visibleUsers.length} {visibleUsers.length === 1 ? 'account' : 'accounts'}</p></div>
@@ -730,6 +795,59 @@ export default function AdminPortal() {
                               <button className="icon-button" title={user.disabled ? 'Enable sign-in' : 'Disable sign-in'} aria-label={`${user.disabled ? 'Enable' : 'Disable'} ${user.username}`} onClick={() => void handleToggleUser(user)} disabled={actionBusy}>{user.disabled ? <BadgeCheck size={16} /> : <UserRoundX size={16} />}</button>
                               <button className="icon-button icon-danger" title="Delete user" aria-label={`Delete ${user.username}`} onClick={() => void handleDeleteUser(user)} disabled={actionBusy}><Trash2 size={16} /></button>
                             </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          ) : tab === 'demo-requests' ? (
+            <section className="table-card">
+              <div className="table-toolbar">
+                <div><h2>Demo activation queue</h2><p>{demoRequests.length} total requests</p></div>
+                <div className="request-toolbar-note"><Clock3 size={15} /> Each approved key starts a two-day demo when redeemed.</div>
+              </div>
+              {loadingData ? (
+                <div className="table-state"><LoaderCircle className="spin" size={21} /> Loading requests…</div>
+              ) : demoRequests.length === 0 ? (
+                <div className="empty-state"><KeyRound size={25} /><strong>No demo requests yet</strong><span>Requests from aptPOS will appear here.</span></div>
+              ) : (
+                <div className="table-scroll">
+                  <table>
+                    <thead><tr><th>TYPE</th><th>REQUESTED BY</th><th>SYSTEM CODE</th><th>REQUESTED</th><th>STATUS</th><th>DEMO ACCESS</th><th className="actions-heading">ACTIONS</th></tr></thead>
+                    <tbody>
+                      {demoRequests.map((request) => (
+                        <tr key={request.id}>
+                          <td data-label="Type"><StatusPill tone={request.requestType === 'extension' ? 'neutral' : 'blue'}>{request.requestType === 'extension' ? 'Demo extension' : 'Demo activation'}</StatusPill></td>
+                          <td data-label="Requested by">{request.requestedBy}</td>
+                          <td data-label="System code" className="date-cell"><code>{request.systemCode}</code></td>
+                          <td data-label="Requested" className="date-cell">{formatDate(request.requestedAt)}</td>
+                          <td data-label="Status"><StatusPill tone={request.status === 'approved' ? 'green' : request.status === 'rejected' ? 'red' : 'amber'}>{request.status}</StatusPill></td>
+                          <td data-label="Demo access" className="date-cell">
+                            {request.expiresAt
+                              ? `${request.keyUsed ? 'Redeemed' : 'Key not used'} · ${formatDate(request.expiresAt)}`
+                              : '—'}
+                          </td>
+                          <td data-label="Actions">
+                            {request.status === 'pending' ? (
+                              <div className="row-actions">
+                                <button className="button button-approve" onClick={() => void handleReviewDemoRequest(request, 'approved')} disabled={actionBusy}><Check size={15} /> Approve & generate key</button>
+                                <button className="icon-button icon-danger" title="Reject demo request" aria-label="Reject demo request" onClick={() => void handleReviewDemoRequest(request, 'rejected')} disabled={actionBusy}><X size={16} /></button>
+                              </div>
+                            ) : issuedDemoKeys[request.id] ? (
+                              <div className="row-actions">
+                                <input className="w-64 rounded border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-xs" readOnly value={issuedDemoKeys[request.id]} aria-label="Generated demo key" />
+                                <button className="button button-quiet" onClick={() => void handleCopyDemoKey(issuedDemoKeys[request.id])}><Check size={15} /> Copy key</button>
+                              </div>
+                            ) : request.status === 'approved' && !request.keyUsed ? (
+                              <button className="button button-quiet" onClick={() => void handleRegenerateDemoKey(request)} disabled={actionBusy}>
+                                <KeyRound size={15} /> Generate replacement key
+                              </button>
+                            ) : request.reviewedAt ? (
+                              <span className="reviewed-note">Reviewed {formatDate(request.reviewedAt)}</span>
+                            ) : null}
                           </td>
                         </tr>
                       ))}

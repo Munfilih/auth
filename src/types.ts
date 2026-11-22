@@ -28,6 +28,28 @@ export interface ActivationRequest {
   reviewedBy?: string;
 }
 
+export type DemoRequestType = 'demo' | 'extension';
+export type DemoRequestStatus = 'pending' | 'approved' | 'rejected';
+
+export interface DemoRequest {
+  id: string;
+  requestType: DemoRequestType;
+  systemCode: string;
+  requestedBy: string;
+  status: DemoRequestStatus;
+  requestedAt: string | null;
+  reviewedAt: string | null;
+  reviewedBy?: string;
+  redeemedAt: string | null;
+  expiresAt: string | null;
+  keyUsed: boolean;
+}
+
+export interface ReviewedDemoRequest {
+  request: DemoRequest;
+  demoKey?: string;
+}
+
 export interface CreateUserInput {
   username: string;
   email: string;

@@ -3,8 +3,12 @@ import type {
   ActivationRequest,
   AppUser,
   CreateUserInput,
+  DemoRequest,
+  ReviewedDemoRequest,
   UpdateUserInput,
 } from './types';
+
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/+$/, '') || '';
 
 async function request<T>(
   path: string,
@@ -12,7 +16,7 @@ async function request<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const token = await user.getIdToken();
-  const response = await fetch(path, {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -86,5 +90,26 @@ export async function reviewActivationRequest(
   return request(`/api/admin/activation-requests/${encodeURIComponent(id)}`, user, {
     method: 'PATCH',
     body: JSON.stringify({ status }),
+  });
+}
+
+export async function getDemoRequests(user: User): Promise<DemoRequest[]> {
+  return request('/api/admin/demo-requests', user);
+}
+
+export async function reviewDemoRequest(
+  user: User,
+  id: string,
+  status: 'approved' | 'rejected'
+): Promise<ReviewedDemoRequest> {
+  return request(`/api/admin/demo-requests/${encodeURIComponent(id)}`, user, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  });
+}
+
+export async function regenerateDemoRequestKey(user: User, id: string): Promise<{ demoKey: string }> {
+  return request(`/api/admin/demo-requests/${encodeURIComponent(id)}/key`, user, {
+    method: 'POST',
   });
 }

@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { createHash, randomBytes } from 'node:crypto';
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 import { applicationDefault, cert, getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth, type Auth, type DecodedIdToken } from 'firebase-admin/auth';
@@ -6,8 +7,15 @@ import { FieldValue, Timestamp, getFirestore, type Firestore } from 'firebase-ad
 import type { AppVersion, UserRole, UserType } from './src/types';
 
 const app = express();
-const port = Number(process.env.ADMIN_API_PORT || 3002);
+const port = Number(process.env.PORT || process.env.ADMIN_API_PORT || 3002);
+const host = process.env.ADMIN_API_HOST || '127.0.0.1';
 const portalAdminEmail = (process.env.VITE_ADMIN_LOGIN_EMAIL || '').trim().toLowerCase();
+const allowedPortalOrigins = new Set(
+  (process.env.ADMIN_PORTAL_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+);
 const projectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID;
 let adminAuth: Auth | null = null;
 let firestore: Firestore | null = null;
@@ -39,9 +47,195 @@ try {
 }
 
 app.use(express.json({ limit: '1mb' }));
+app.use((req, res, next) => {
+  const origin = req.header('origin');
+  if (origin && allowedPortalOrigins.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  }
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(origin && allowedPortalOrigins.has(origin) ? 204 : 403);
+    return;
+  }
+  next();
+});
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, firebaseConfigured: Boolean(adminAuth && firestore && portalAdminEmail) });
+});
+
+app.post('/api/registration/demo-requests', async (req, res, next) => {
+  try {
+    const requestType = req.body?.requestType;
+    const systemCode = typeof req.body?.systemCode === 'string'
+      ? req.body.systemCode.trim().toUpperCase()
+      : '';
+    const requestedBy = typeof req.body?.requestedBy === 'string'
+      ? req.body.requestedBy.trim().slice(0, 100)
+      : '';
+    if ((requestType !== 'demo' && requestType !== 'extension') || !isSystemCode(systemCode)) {
+      res.status(400).json({ error: 'Choose a valid demo request type and system code.' });
+      return;
+    }
+    if (!requestedBy) {
+      res.status(400).json({ error: 'Enter the demo username.' });
+      return;
+    }
+
+    const { db } = getServices();
+    const licenseRef = db.collection('demoLicenses').doc(systemCodeId(systemCode));
+    const licenseSnapshot = await licenseRef.get();
+    const licenseData = licenseSnapshot.data();
+    const expiration = licenseData?.expiresAt instanceof Timestamp
+      ? licenseData.expiresAt.toMillis()
+      : 0;
+    if (requestType === 'demo' && licenseSnapshot.exists) {
+      throw new PortalRequestError(409, 'This system already had demo access. Request an extension instead.');
+    }
+    if (requestType === 'extension' && (!licenseSnapshot.exists || expiration > Date.now())) {
+      throw new PortalRequestError(409, 'A demo extension can only be requested after the demo expires.');
+    }
+
+    const sameSystemRequests = await db.collection('demoRequests')
+      .where('systemCode', '==', systemCode)
+      .get();
+    const existing = sameSystemRequests.docs.find((document) => {
+      const data = document.data();
+      return data.status === 'pending' || (data.status === 'approved' && data.keyUsed !== true);
+    });
+    if (existing) {
+      const data = existing.data();
+      res.status(200).json({
+        requestId: existing.id,
+        requestType: data.requestType,
+        status: data.status,
+        alreadyPending: data.status === 'pending',
+        message: data.status === 'pending'
+          ? 'A request for this system is already waiting for approval.'
+          : 'A demo key has already been issued for this request. Use that key.',
+      });
+      return;
+    }
+
+    const requestRef = db.collection('demoRequests').doc();
+    await requestRef.set({
+      requestType,
+      systemCode,
+      requestedBy,
+      status: 'pending',
+      requestedAt: FieldValue.serverTimestamp(),
+      reviewedAt: null,
+      reviewedBy: null,
+      keyUsed: false,
+      redeemedAt: null,
+      expiresAt: null,
+    });
+    res.status(201).json({
+      requestId: requestRef.id,
+      requestType,
+      status: 'pending',
+      message: 'Your request was sent to aptPOS User Management.',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/registration/demo-activation', async (req, res, next) => {
+  try {
+    const systemCode = typeof req.body?.systemCode === 'string'
+      ? req.body.systemCode.trim().toUpperCase()
+      : '';
+    const activationKey = typeof req.body?.activationKey === 'string'
+      ? req.body.activationKey.trim().toUpperCase()
+      : '';
+    if (!isSystemCode(systemCode) || activationKey.length < 20 || activationKey.length > 100) {
+      res.status(400).json({ error: 'Enter a valid system code and demo key.' });
+      return;
+    }
+
+    const { db } = getServices();
+    const keyHash = demoKeyHash(activationKey);
+    const claimRef = db.collection('demoKeyClaims').doc(keyHash);
+    const claimSnapshot = await claimRef.get();
+    if (!claimSnapshot.exists) {
+      throw new PortalRequestError(403, 'The demo key is invalid or has already been used.');
+    }
+    const requestId = String(claimSnapshot.data()?.requestId || '');
+    if (!requestId) throw new PortalRequestError(403, 'The demo key is invalid or has already been used.');
+
+    const requestRef = db.collection('demoRequests').doc(requestId);
+    const licenseRef = db.collection('demoLicenses').doc(systemCodeId(systemCode));
+    const now = Date.now();
+    const newExpiresAt = new Date(now + DEMO_DURATION_MS);
+    const activationExpiresAt = await db.runTransaction(async (transaction) => {
+      const [currentClaim, requestSnapshot, licenseSnapshot] = await Promise.all([
+        transaction.get(claimRef),
+        transaction.get(requestRef),
+        transaction.get(licenseRef),
+      ]);
+      const claimData = currentClaim.data();
+      const requestData = requestSnapshot.data();
+      if (
+        !currentClaim.exists ||
+        !requestSnapshot.exists ||
+        requestData?.status !== 'approved' ||
+        requestData?.demoKeyHash !== keyHash ||
+        requestData?.systemCode !== systemCode ||
+        claimData?.systemCode !== systemCode
+      ) {
+        throw new PortalRequestError(403, 'The demo key is invalid, already used, or belongs to another system.');
+      }
+
+      const licenseData = licenseSnapshot.data();
+      if (claimData?.used === true || requestData?.keyUsed === true) {
+        const previousExpiry = licenseData?.expiresAt;
+        if (
+          claimData?.used === true &&
+          requestData?.keyUsed === true &&
+          licenseData?.requestId === requestId &&
+          previousExpiry instanceof Timestamp
+        ) {
+          return previousExpiry.toDate().toISOString();
+        }
+        throw new PortalRequestError(403, 'The demo key is invalid, already used, or belongs to another system.');
+      }
+
+      const requestType = requestData.requestType;
+      const currentExpiry = licenseData?.expiresAt instanceof Timestamp
+        ? licenseData.expiresAt.toMillis()
+        : 0;
+      if (requestType === 'demo' && licenseSnapshot.exists) {
+        throw new PortalRequestError(409, 'This system already used its demo. Request an extension.');
+      }
+      if (requestType === 'extension' && (!licenseSnapshot.exists || currentExpiry > now)) {
+        throw new PortalRequestError(409, 'The extension key can only be used after the current demo expires.');
+      }
+
+      transaction.update(requestRef, {
+        keyUsed: true,
+        redeemedAt: FieldValue.serverTimestamp(),
+        expiresAt: Timestamp.fromDate(newExpiresAt),
+      });
+      transaction.update(claimRef, {
+        used: true,
+        usedAt: FieldValue.serverTimestamp(),
+      });
+      transaction.set(licenseRef, {
+        systemCode,
+        requestId,
+        activatedAt: FieldValue.serverTimestamp(),
+        expiresAt: Timestamp.fromDate(newExpiresAt),
+      });
+      return newExpiresAt.toISOString();
+    });
+
+    res.json({ expiresAt: activationExpiresAt });
+  } catch (error) {
+    next(error);
+  }
 });
 
 const requirePortalAdmin: RequestHandler = (req, res, next) => {
@@ -117,6 +311,49 @@ function parseUserRole(value: unknown): UserRole | null {
 }
 
 const APP_VERSIONS: AppVersion[] = ['Soft', 'Silver', 'Standard'];
+const DEMO_DURATION_MS = 2 * 24 * 60 * 60 * 1000;
+
+class PortalRequestError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = 'PortalRequestError';
+  }
+}
+
+function isSystemCode(value: unknown): value is string {
+  return typeof value === 'string' && /^APT(?:-[A-Z0-9]{4}){5}$/.test(value);
+}
+
+function systemCodeId(systemCode: string): string {
+  return createHash('sha256').update(`aptPOS-demo-system:${systemCode}`).digest('hex');
+}
+
+function demoKeyHash(key: string): string {
+  return createHash('sha256').update(key.trim().toUpperCase()).digest('hex');
+}
+
+function createDemoKey(): string {
+  const value = randomBytes(18).toString('hex').toUpperCase();
+  return `APT-DEMO-${value.match(/.{1,4}/g)?.join('-') || value}`;
+}
+
+function mapDemoRequest(id: string, data: Record<string, unknown>) {
+  return {
+    id,
+    requestType: data.requestType === 'extension' ? 'extension' as const : 'demo' as const,
+    systemCode: String(data.systemCode || ''),
+    requestedBy: String(data.requestedBy || ''),
+    status: data.status === 'approved' || data.status === 'rejected'
+      ? data.status
+      : 'pending' as const,
+    requestedAt: toIsoDate(data.requestedAt),
+    reviewedAt: toIsoDate(data.reviewedAt),
+    reviewedBy: typeof data.reviewedBy === 'string' ? data.reviewedBy : undefined,
+    redeemedAt: toIsoDate(data.redeemedAt),
+    expiresAt: toIsoDate(data.expiresAt),
+    keyUsed: data.keyUsed === true,
+  };
+}
 
 app.get('/api/admin/session', (_req, res) => {
   res.json({ username: res.locals.adminUsername || 'aptadmin' });
@@ -442,9 +679,117 @@ app.patch('/api/admin/activation-requests/:id', async (req, res, next) => {
   }
 });
 
+app.get('/api/admin/demo-requests', async (_req, res, next) => {
+  try {
+    const { db } = getServices();
+    const snapshot = await db.collection('demoRequests').get();
+    const requests = snapshot.docs
+      .map((document) => mapDemoRequest(document.id, document.data()))
+      .sort((left, right) => (right.requestedAt || '').localeCompare(left.requestedAt || ''));
+    res.json(requests);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch('/api/admin/demo-requests/:id', async (req, res, next) => {
+  try {
+    const status = req.body?.status;
+    if (status !== 'approved' && status !== 'rejected') {
+      res.status(400).json({ error: 'Choose approved or rejected.' });
+      return;
+    }
+
+    const { db } = getServices();
+    const requestRef = db.collection('demoRequests').doc(req.params.id);
+    const adminUid = String(res.locals.adminUid);
+    const demoKey = status === 'approved' ? createDemoKey() : undefined;
+    const keyHash = demoKey ? demoKeyHash(demoKey) : undefined;
+    await db.runTransaction(async (transaction) => {
+      const requestSnapshot = await transaction.get(requestRef);
+      if (!requestSnapshot.exists) {
+        throw new PortalRequestError(404, 'Demo request not found.');
+      }
+      const requestData = requestSnapshot.data();
+      if (requestData?.status !== 'pending') {
+        throw new PortalRequestError(409, 'This demo request has already been reviewed.');
+      }
+
+      if (status === 'approved' && requestData?.requestType === 'extension') {
+        const licenseRef = db.collection('demoLicenses').doc(
+          systemCodeId(String(requestData.systemCode || ''))
+        );
+        const licenseSnapshot = await transaction.get(licenseRef);
+        const expiresAt = licenseSnapshot.data()?.expiresAt;
+        if (!(expiresAt instanceof Timestamp) || expiresAt.toMillis() > Date.now()) {
+          throw new PortalRequestError(409, 'The demo extension can only be approved after the current demo expires.');
+        }
+      }
+
+      transaction.update(requestRef, {
+        status,
+        reviewedAt: FieldValue.serverTimestamp(),
+        reviewedBy: adminUid,
+        ...(status === 'approved' ? { demoKeyHash: keyHash, keyUsed: false } : {}),
+      });
+      if (status === 'approved' && keyHash) {
+        transaction.set(db.collection('demoKeyClaims').doc(keyHash), {
+          requestId: requestRef.id,
+          systemCode: requestData?.systemCode,
+          used: false,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+      }
+    });
+
+    const updated = (await requestRef.get()).data();
+    if (!updated) throw new Error('The reviewed demo request could not be loaded.');
+    res.json({
+      request: mapDemoRequest(requestRef.id, updated),
+      ...(demoKey ? { demoKey } : {}),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/admin/demo-requests/:id/key', async (req, res, next) => {
+  try {
+    const { db } = getServices();
+    const requestRef = db.collection('demoRequests').doc(req.params.id);
+    const demoKey = createDemoKey();
+    const keyHash = demoKeyHash(demoKey);
+    await db.runTransaction(async (transaction) => {
+      const requestSnapshot = await transaction.get(requestRef);
+      if (!requestSnapshot.exists) {
+        throw new PortalRequestError(404, 'Demo request not found.');
+      }
+      const requestData = requestSnapshot.data();
+      if (requestData?.status !== 'approved' || requestData.keyUsed === true) {
+        throw new PortalRequestError(409, 'A replacement key is only available for an approved, unused demo request.');
+      }
+
+      transaction.update(requestRef, { demoKeyHash: keyHash });
+      transaction.set(db.collection('demoKeyClaims').doc(keyHash), {
+        requestId: requestRef.id,
+        systemCode: requestData.systemCode,
+        used: false,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    });
+    res.json({ demoKey });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const message = error instanceof Error ? error.message : 'The request could not be completed.';
   console.error(`Admin portal API error: ${message}`);
+  if (error instanceof PortalRequestError) {
+    res.status(error.status).json({ error: message });
+    return;
+  }
   const errorCode =
     typeof error === 'object' && error !== null && 'code' in error
       ? String(error.code)
@@ -452,8 +797,8 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   res.status(errorCode.startsWith('auth/') ? 400 : 500).json({ error: message });
 });
 
-app.listen(port, '127.0.0.1', () => {
-  console.log(`Admin portal API listening on http://127.0.0.1:${port}`);
+app.listen(port, host, () => {
+  console.log(`Admin portal API listening on http://${host}:${port}`);
   if (!adminAuth || !firestore) {
     console.warn(`Firebase is not configured: ${firebaseSetupError}`);
   }
