@@ -611,18 +611,19 @@ export default function AdminPortal() {
         <div className="setup-card">
           <div className="brand-mark"><ShieldCheck size={25} /></div>
           <p className="eyebrow">APTPos ADMIN PORTAL</p>
-          <h1>{firebaseWebConfigured ? 'Finish Firebase setup' : 'Connect your Firebase project'}</h1>
+          <h1>{firebaseWebConfigured ? 'Finish portal setup' : 'Firebase settings are missing'}</h1>
           <p className="muted-copy">
             {firebaseWebConfigured
-              ? 'The web app config is saved. Complete these Firebase admin steps before signing in.'
-              : <>This separate portal uses Firebase only. Add your Firebase web settings and Admin SDK credentials to
-                <code> .env </code>, then restart the portal.</>}
+              ? <>Set <code>VITE_ADMIN_LOGIN_EMAIL</code> as a GitHub Actions repository variable, then redeploy.</>
+              : <>Add the required Firebase web settings and <code>VITE_ADMIN_LOGIN_EMAIL</code> as GitHub Actions
+                repository variables, then rerun the Pages workflow.</>}
           </p>
           <div className="setup-checklist">
+            <span><Check size={15} /> Set <code>VITE_FIREBASE_API_KEY</code>, <code>VITE_FIREBASE_AUTH_DOMAIN</code>, <code>VITE_FIREBASE_PROJECT_ID</code>, and <code>VITE_FIREBASE_APP_ID</code></span>
             <span><Check size={15} /> Set <code>VITE_ADMIN_LOGIN_EMAIL</code> to the Firebase Auth email for aptadmin</span>
             <span><Check size={15} /> Enable Firebase Authentication: Email/Password</span>
             <span><Check size={15} /> Firestore: create <code>portalAdmins/{'{uid}'}</code> with <code>active: true</code></span>
-            <span><Check size={15} /> Set <code>GOOGLE_APPLICATION_CREDENTIALS</code> to the service-account JSON path</span>
+            <span><Check size={15} /> Set <code>VITE_API_BASE_URL</code> to the hosted Node API; keep service-account credentials on that server</span>
           </div>
           <a className="button button-primary setup-link" href="https://console.firebase.google.com/" target="_blank" rel="noreferrer">
             Open Firebase Console <ArrowUpRight size={16} />
