@@ -27,9 +27,17 @@ export interface VersionControlSettings {
   updatedAt: string | null;
 }
 
+export interface RegisteredSystem {
+  systemCode: string;
+  username: string;
+  appVersion: AppVersion;
+  status: 'pending_activation' | 'active';
+  registeredAt: string | null;
+  activatedAt: string | null;
+}
+
 export type UserType = 'current' | 'demo';
 export type UserRole = 'cashier' | 'custom';
-export type ActivationStatus = 'pending' | 'approved' | 'rejected';
 
 export interface AppUser {
   uid: string;
@@ -41,19 +49,6 @@ export interface AppUser {
   disabled: boolean;
   createdAt: string | null;
   appVersion?: AppVersion;
-}
-
-export interface ActivationRequest {
-  id: string;
-  userId: string;
-  username: string;
-  email: string;
-  appVersion: AppVersion;
-  status: ActivationStatus;
-  note: string;
-  requestedAt: string | null;
-  reviewedAt: string | null;
-  reviewedBy?: string;
 }
 
 export type DemoRequestType = 'demo' | 'extension';
@@ -121,6 +116,7 @@ export interface DemoRequest {
   systemInfo?: DemoSystemInfo;
   registeredSystem: boolean;
   registeredVersion?: AppVersion;
+  registrationStatus?: 'pending_activation' | 'active';
   keyUsed: boolean;
   hardwareInfo?: HardwareInfo;
 }
@@ -128,15 +124,6 @@ export interface DemoRequest {
 export interface ReviewedDemoRequest {
   request: DemoRequest;
   demoKey?: string;
-}
-
-export interface CreateUserInput {
-  username: string;
-  email: string;
-  displayName: string;
-  password: string;
-  role: UserRole;
-  userType: UserType;
 }
 
 export interface UpdateUserInput {

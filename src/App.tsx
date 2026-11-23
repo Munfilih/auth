@@ -6,14 +6,11 @@ import {
   ChevronRight,
   CircleAlert,
   Clock3,
-  FileClock,
   KeyRound,
   LoaderCircle,
   LogOut,
   Pencil,
-  Plus,
   Search,
-  Settings2,
   ShieldCheck,
   Trash2,
   UserRound,
@@ -23,22 +20,17 @@ import {
   X,
 } from 'lucide-react';
 import {
-  createActivationRequest,
-  createUser,
   deactivateDemoRequest,
   deleteDemoSystemData,
   deleteUser,
   extendDemoRequest,
   convertDemoSystemToRegistered,
-  getActivationRequests,
   getDemoRequests,
   getDemoSystemActivity,
+  getRegisteredSystems,
   getUsers,
-  getVersionControlSettings,
   regenerateDemoRequestKey,
-  reviewActivationRequest,
   reviewDemoRequest,
-  saveVersionControlSettings,
   updateUser,
   updateDemoRequestExpiry,
 } from './api';
@@ -52,20 +44,17 @@ import {
 import { FirebaseError } from 'firebase/app';
 import type { OAuthCredential, User } from 'firebase/auth';
 import type {
-  ActivationRequest,
   AppUser,
-  AppModuleId,
   AppVersion,
-  CreateUserInput,
   DemoRequest,
   DemoSystemActivity,
   UpdateUserInput,
   ReviewedDemoRequest,
+  RegisteredSystem,
   UserRole,
   UserType,
-  VersionControlSettings,
 } from './types';
-import { APP_MODULES, APP_VERSIONS } from './types';
+import { APP_VERSIONS } from './types';
 import {
   GoogleAuthProvider,
   getRedirectResult,
@@ -76,18 +65,8 @@ import {
   signOut,
 } from 'firebase/auth';
 
-type PortalTab = 'current' | 'demo' | 'requests' | 'demo-requests' | 'version-control';
+type PortalTab = 'current' | 'demo' | 'demo-requests';
 type FlashMessage = { kind: 'success' | 'error'; text: string } | null;
-
-const ALL_MODULES = APP_MODULES.map((module) => module.id);
-const DEFAULT_VERSION_CONTROL_SETTINGS: VersionControlSettings = {
-  allowedModules: {
-    Soft: [...ALL_MODULES],
-    Silver: [...ALL_MODULES],
-    Standard: [...ALL_MODULES],
-  },
-  updatedAt: null,
-};
 
 function messageFrom(error: unknown): string {
   return error instanceof Error ? error.message : 'Something went wrong.';
@@ -106,24 +85,6 @@ function dateTimeLocalValue(value: string | null): string {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return '';
   return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
-}
-
-function updateAllowedModule(
-  settings: VersionControlSettings,
-  version: AppVersion,
-  module: AppModuleId,
-  allowed: boolean
-): VersionControlSettings {
-  const modules = new Set(settings.allowedModules[version]);
-  if (allowed) modules.add(module);
-  else modules.delete(module);
-  return {
-    ...settings,
-    allowedModules: {
-      ...settings.allowedModules,
-      [version]: [...modules],
-    },
-  };
 }
 
 function formatBytes(bytes: number): string {
@@ -146,54 +107,37 @@ function StatusPill({ children, tone = 'neutral' }: {
 
 function UserEditor({
   user,
-  defaultType,
   busy,
   onClose,
   onSubmit,
 }: {
-  user: AppUser | null;
-  defaultType: UserType;
+  user: AppUser;
   busy: boolean;
   onClose: () => void;
-  onSubmit: (input: CreateUserInput | UpdateUserInput) => Promise<void>;
+  onSubmit: (input: UpdateUserInput) => Promise<void>;
 }) {
-  const [username, setUsername] = useState(user?.username || '');
-  const [email, setEmail] = useState(user?.email || '');
-  const [displayName, setDisplayName] = useState(user?.displayName || '');
+  const [username, setUsername] = useState(user.username);
+  const [email, setEmail] = useState(user.email);
+  const [displayName, setDisplayName] = useState(user.displayName);
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState<UserRole>(user?.role || 'cashier');
-  const [userType, setUserType] = useState<UserType>(user?.userType || defaultType);
-  const [disabled, setDisabled] = useState(user?.disabled || false);
+  const [role, setRole] = useState<UserRole>(user.role);
+  const [userType, setUserType] = useState<UserType>(user.userType);
+  const [disabled, setDisabled] = useState(user.disabled);
   const [error, setError] = useState('');
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setError('');
-    if (!user && password.length < 8) {
-      setError('Use a temporary password with at least 8 characters.');
-      return;
-    }
     try {
-      if (user) {
-        await onSubmit({
-          username: username.trim(),
-          email: email.trim(),
-          displayName: displayName.trim(),
-          password: password || undefined,
-          role,
-          userType,
-          disabled,
-        });
-      } else {
-        await onSubmit({
-          username: username.trim(),
-          email: email.trim(),
-          displayName: displayName.trim(),
-          password,
-          role,
-          userType,
-        });
-      }
+      await onSubmit({
+        username: username.trim(),
+        email: email.trim(),
+        displayName: displayName.trim(),
+        password: password || undefined,
+        role,
+        userType,
+        disabled,
+      });
     } catch (submitError) {
       setError(messageFrom(submitError));
     }
@@ -206,8 +150,8 @@ function UserEditor({
       <form className="modal-card" onSubmit={(event) => void submit(event)}>
         <div className="modal-heading">
           <div>
-            <p className="eyebrow">{user ? 'ACCOUNT DETAILS' : 'NEW ACCOUNT'}</p>
-            <h2>{user ? 'Edit app user' : 'Create app user'}</h2>
+            <p className="eyebrow">ACCOUNT DETAILS</p>
+            <h2>Edit app user</h2>
           </div>
           <button type="button" className="icon-button" onClick={onClose} aria-label="Close dialog">
             <X size={18} />
@@ -241,29 +185,26 @@ function UserEditor({
             </select>
           </label>
           <label className="form-span">
-            {user ? 'New password (leave blank to keep current)' : 'Temporary password'}
+            New password (leave blank to keep current)
             <input
               type="password"
               autoComplete="new-password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              required={!user}
               minLength={8}
             />
           </label>
-          {user && (
-            <label className="checkbox-field form-span">
-              <input type="checkbox" checked={disabled} onChange={(event) => setDisabled(event.target.checked)} />
-              <span>Disable sign-in for this user</span>
-            </label>
-          )}
+          <label className="checkbox-field form-span">
+            <input type="checkbox" checked={disabled} onChange={(event) => setDisabled(event.target.checked)} />
+            <span>Disable sign-in for this user</span>
+          </label>
         </div>
         {error && <p className="inline-error" role="alert">{error}</p>}
         <div className="modal-actions">
           <button type="button" className="button button-quiet" onClick={onClose} disabled={busy}>Cancel</button>
           <button type="submit" className="button button-primary" disabled={busy}>
             {busy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
-            {user ? 'Save changes' : 'Create user'}
+            Save changes
           </button>
         </div>
       </form>
@@ -271,27 +212,31 @@ function UserEditor({
   );
 }
 
-function ActivationRequestEditor({
-  users,
+function RegistrationConversionEditor({
+  systemCode,
   busy,
   onClose,
   onSubmit,
 }: {
-  users: AppUser[];
+  systemCode: string;
   busy: boolean;
   onClose: () => void;
-  onSubmit: (input: { userId: string; appVersion: AppVersion; note: string }) => Promise<void>;
+  onSubmit: (input: {
+    appVersion: AppVersion;
+    username: string;
+    password: string;
+  }) => Promise<void>;
 }) {
-  const [userId, setUserId] = useState(users[0]?.uid || '');
   const [appVersion, setAppVersion] = useState<AppVersion>('Standard');
-  const [note, setNote] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setError('');
     try {
-      await onSubmit({ userId, appVersion, note: note.trim() });
+      await onSubmit({ appVersion, username: username.trim(), password });
     } catch (submitError) {
       setError(messageFrom(submitError));
     }
@@ -304,41 +249,54 @@ function ActivationRequestEditor({
       <form className="modal-card modal-card-narrow" onSubmit={(event) => void submit(event)}>
         <div className="modal-heading">
           <div>
-            <p className="eyebrow">ACTIVATION</p>
-            <h2>New activation request</h2>
+            <p className="eyebrow">REGISTER SYSTEM</p>
+            <h2>Convert demo to registered</h2>
           </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Close dialog">
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close dialog" disabled={busy}>
             <X size={18} />
           </button>
         </div>
+        <p className="muted-copy">
+          Choose a version and create the owner login for system <code>{systemCode}</code>.
+          The registration key will be shown once after conversion.
+        </p>
         <div className="form-grid one-column">
           <label>
-            User
-            <select value={userId} onChange={(event) => setUserId(event.target.value)} required>
-              {users.map((user) => (
-                <option key={user.uid} value={user.uid}>
-                  {user.displayName} · {user.username}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Requested version
+            Registered version
             <select value={appVersion} onChange={(event) => setAppVersion(event.target.value as AppVersion)}>
               {APP_VERSIONS.map((version) => <option key={version}>{version}</option>)}
             </select>
           </label>
           <label>
-            Note
-            <textarea value={note} onChange={(event) => setNote(event.target.value)} rows={3} maxLength={500} />
+            POS username
+            <input
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              autoComplete="username"
+              minLength={3}
+              maxLength={32}
+              required
+            />
+          </label>
+          <label>
+            POS password
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete="new-password"
+              minLength={8}
+              maxLength={128}
+              required
+            />
           </label>
         </div>
         {error && <p className="inline-error" role="alert">{error}</p>}
         <div className="modal-actions">
           <button type="button" className="button button-quiet" onClick={onClose} disabled={busy}>Cancel</button>
-          <button type="submit" className="button button-primary" disabled={busy || !userId}>
-            {busy ? <LoaderCircle className="spin" size={16} /> : <FileClock size={16} />}
-            Submit request
+          <button type="submit" className="button button-primary" disabled={busy}>
+            {busy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
+            {busy ? 'Converting…' : 'Convert and create key'}
           </button>
         </div>
       </form>
@@ -356,9 +314,8 @@ export default function AdminPortal() {
   const pendingGoogleCredential = useRef<OAuthCredential | null>(null);
   const [tab, setTab] = useState<PortalTab>('current');
   const [users, setUsers] = useState<AppUser[]>([]);
-  const [requests, setRequests] = useState<ActivationRequest[]>([]);
+  const [registeredSystems, setRegisteredSystems] = useState<RegisteredSystem[]>([]);
   const [demoRequests, setDemoRequests] = useState<DemoRequest[]>([]);
-  const [versionControl, setVersionControl] = useState(DEFAULT_VERSION_CONTROL_SETTINGS);
   const [demoSystemActivity, setDemoSystemActivity] = useState<DemoSystemActivity | null>(null);
   const [loadingDemoActivity, setLoadingDemoActivity] = useState(false);
   const [demoActivityError, setDemoActivityError] = useState('');
@@ -371,29 +328,32 @@ export default function AdminPortal() {
   const [demoSearch, setDemoSearch] = useState('');
   const [demoStatusFilter, setDemoStatusFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
   const [selectedDemoRequestId, setSelectedDemoRequestId] = useState<string | null>(null);
-  const [conversionVersion, setConversionVersion] = useState<AppVersion | ''>('');
+  const [conversionRequest, setConversionRequest] = useState<DemoRequest | null>(null);
+  const [registrationKeyResult, setRegistrationKeyResult] = useState<{
+    systemCode: string;
+    username: string;
+    appVersion: AppVersion;
+    registrationKey: string;
+  } | null>(null);
   const [expiryEditorRequest, setExpiryEditorRequest] = useState<DemoRequest | null>(null);
   const [expiryInput, setExpiryInput] = useState('');
   const [deleteDemoDataRequest, setDeleteDemoDataRequest] = useState<DemoRequest | null>(null);
   const [deleteConfirmationCode, setDeleteConfirmationCode] = useState('');
   const [regenerateKeyRequest, setRegenerateKeyRequest] = useState<DemoRequest | null>(null);
-  const [userEditor, setUserEditor] = useState<{ user: AppUser | null; type: UserType } | null>(null);
-  const [requestEditorOpen, setRequestEditorOpen] = useState(false);
+  const [userEditor, setUserEditor] = useState<AppUser | null>(null);
 
   const loadData = useCallback(async (user: User) => {
     setLoadingData(true);
     setPageError('');
     try {
-      const [loadedUsers, loadedRequests, loadedDemoRequests, loadedVersionControl] = await Promise.all([
+      const [loadedUsers, loadedRegisteredSystems, loadedDemoRequests] = await Promise.all([
         getUsers(user),
-        getActivationRequests(user),
+        getRegisteredSystems(user),
         getDemoRequests(user),
-        getVersionControlSettings(user),
       ]);
       setUsers(loadedUsers);
-      setRequests(loadedRequests);
+      setRegisteredSystems(loadedRegisteredSystems);
       setDemoRequests(loadedDemoRequests);
-      setVersionControl(loadedVersionControl);
     } catch (error) {
       setPageError(messageFrom(error));
     } finally {
@@ -426,10 +386,6 @@ export default function AdminPortal() {
       active = false;
     };
   }, [authUser, selectedDemoRequestId]);
-
-  useEffect(() => {
-    setConversionVersion('');
-  }, [selectedDemoRequestId]);
 
   useEffect(() => {
     const auth = firebaseAuth;
@@ -542,9 +498,8 @@ export default function AdminPortal() {
     if (firebaseAuth) await signOut(firebaseAuth);
     setAuthUser(null);
     setUsers([]);
-    setRequests([]);
+    setRegisteredSystems([]);
     setDemoRequests([]);
-    setVersionControl(DEFAULT_VERSION_CONTROL_SETTINGS);
     setIssuedDemoKeys({});
     setTab('current');
   };
@@ -554,19 +509,12 @@ export default function AdminPortal() {
     window.setTimeout(() => setFlash(null), 3600);
   };
 
-  const handleSaveUser = async (input: CreateUserInput | UpdateUserInput) => {
-    if (!authUser) throw new Error('Your admin session has expired.');
+  const handleSaveUser = async (input: UpdateUserInput) => {
+    if (!authUser || !userEditor) throw new Error('Your admin session has expired.');
     setActionBusy(true);
     try {
-      if (userEditor?.user && 'disabled' in input) {
-        await updateUser(authUser, userEditor.user.uid, input);
-        notify('success', 'User details saved.');
-      } else if (!userEditor?.user && !('disabled' in input)) {
-        await createUser(authUser, input);
-        notify('success', 'User account created.');
-      } else {
-        throw new Error('The user form is in an invalid state. Close it and try again.');
-      }
+      await updateUser(authUser, userEditor.uid, input);
+      notify('success', 'User details saved.');
       setUserEditor(null);
       await loadData(authUser);
     } finally {
@@ -611,72 +559,35 @@ export default function AdminPortal() {
     }
   };
 
-  const handleCreateRequest = async (input: {
-    userId: string;
-    appVersion: AppVersion;
-    note: string;
-  }) => {
+  const handleConvertDemoSystem = async (
+    request: DemoRequest,
+    input: { appVersion: AppVersion; username: string; password: string }
+  ) => {
     if (!authUser) throw new Error('Your admin session has expired.');
-    setActionBusy(true);
-    try {
-      await createActivationRequest(authUser, input);
-      setRequestEditorOpen(false);
-      await loadData(authUser);
-      notify('success', 'Activation request submitted.');
-    } finally {
-      setActionBusy(false);
-    }
-  };
-
-  const handleSaveVersionControl = async () => {
-    if (!authUser) return;
-    setActionBusy(true);
-    try {
-      const saved = await saveVersionControlSettings(authUser, versionControl.allowedModules);
-      setVersionControl(saved);
-      notify('success', 'Version module permissions saved.');
-    } catch (error) {
-      notify('error', messageFrom(error));
-    } finally {
-      setActionBusy(false);
-    }
-  };
-
-  const handleConvertDemoSystem = async (request: DemoRequest) => {
-    if (!authUser || !conversionVersion) {
-      notify('error', 'Choose Standard, Silver, or Soft before converting this system.');
-      return;
-    }
     setActionBusy(true);
     try {
       const result = await convertDemoSystemToRegistered(
         authUser,
         request.id,
-        conversionVersion
+        input
       );
       await loadData(authUser);
-      notify(
-        'success',
-        `System ${result.systemCode} is now registered as ${result.appVersion}.`
-      );
-    } catch (error) {
-      notify('error', messageFrom(error));
+      setConversionRequest(null);
+      setSelectedDemoRequestId(null);
+      setRegistrationKeyResult(result);
+      notify('success', `System ${result.systemCode} is pending registration-key activation.`);
     } finally {
       setActionBusy(false);
     }
   };
 
-  const handleReviewRequest = async (request: ActivationRequest, status: 'approved' | 'rejected') => {
-    if (!authUser) return;
-    setActionBusy(true);
+  const handleCopyRegistrationKey = async (registrationKey: string) => {
     try {
-      await reviewActivationRequest(authUser, request.id, status);
-      await loadData(authUser);
-      notify('success', status === 'approved' ? 'Activation request approved.' : 'Activation request rejected.');
+      if (!navigator.clipboard) throw new Error('Clipboard access is unavailable in this browser.');
+      await navigator.clipboard.writeText(registrationKey);
+      notify('success', 'Registration key copied.');
     } catch (error) {
       notify('error', messageFrom(error));
-    } finally {
-      setActionBusy(false);
     }
   };
 
@@ -835,13 +746,20 @@ export default function AdminPortal() {
     () => users.filter((user) => user.userType === 'demo'),
     [users]
   );
+  const visibleRegisteredSystems = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return registeredSystems.filter((system) =>
+      !query || [system.username, system.systemCode].some((value) =>
+        value.toLowerCase().includes(query)
+      )
+    );
+  }, [registeredSystems, search]);
   const visibleUsers = (tab === 'current' ? currentUsers : demoUsers).filter((user) => {
     const query = search.trim().toLowerCase();
     return !query || [user.username, user.displayName, user.email].some((value) =>
       value.toLowerCase().includes(query)
     );
   });
-  const pendingRequests = requests.filter((request) => request.status === 'pending').length;
   const pendingDemoRequests = demoRequests.filter((request) => request.status === 'pending').length;
   const selectedDemoRequest = demoRequests.find((request) => request.id === selectedDemoRequestId) || null;
   const visibleDemoRequests = useMemo(() => {
@@ -950,26 +868,21 @@ export default function AdminPortal() {
   const resolvedTitle = ({
     current: 'Current Users',
     demo: 'Demo Users',
-    requests: 'Activation Requests',
     'demo-requests': 'Demo Key Requests',
-    'version-control': 'Version Control Settings',
   } satisfies Record<PortalTab, string>)[tab];
   const navItems: Array<{
     id: PortalTab;
     label: string;
     icon: typeof Users;
     badge?: number;
-    section: 'accounts' | 'requests' | 'settings';
+    section: 'accounts' | 'requests';
   }> = [
     { id: 'current', label: 'Current Users', icon: Users, section: 'accounts' },
     { id: 'demo', label: 'Demo Users', icon: UserRoundPlus, section: 'accounts' },
-    { id: 'requests', label: 'Activation Requests', icon: FileClock, badge: pendingRequests, section: 'requests' },
     { id: 'demo-requests', label: 'Demo Key Requests', icon: KeyRound, badge: pendingDemoRequests, section: 'requests' },
-    { id: 'version-control', label: 'Version Control Settings', icon: Settings2, section: 'settings' },
   ];
   const accountNavItems = navItems.filter((item) => item.section === 'accounts');
   const requestNavItems = navItems.filter((item) => item.section === 'requests');
-  const settingsNavItems = navItems.filter((item) => item.section === 'settings');
   const renderNavItem = (item: (typeof navItems)[number]) => {
     const Icon = item.icon;
     return (
@@ -997,8 +910,6 @@ export default function AdminPortal() {
           {accountNavItems.map(renderNavItem)}
           <p className="nav-caption nav-group-caption">REQUESTS</p>
           {requestNavItems.map(renderNavItem)}
-          <p className="nav-caption nav-group-caption">SETTINGS</p>
-          {settingsNavItems.map(renderNavItem)}
         </nav>
         <div className="sidebar-bottom">
           <div className="security-note"><ShieldCheck size={16} /><span>Firebase secured<br /><small>Admin access only</small></span></div>
@@ -1026,31 +937,64 @@ export default function AdminPortal() {
               <h1>{resolvedTitle}</h1>
               <p className="muted-copy">
                 {tab === 'current'
-                  ? 'Manage active app accounts and their access.'
+                  ? 'View registered POS systems and current app accounts.'
                   : tab === 'demo'
                     ? 'Manage demo accounts separately from current users.'
-                    : tab === 'demo-requests'
-                      ? 'Review two-day demo key activation and extension requests from aptPOS.'
-                      : tab === 'version-control'
-                        ? 'Choose which POS modules are available in each registered app version.'
-                        : 'Review and process app version activation requests.'}
+                    : 'Review two-day demo key activation and extension requests from aptPOS.'}
               </p>
             </div>
-            {tab === 'requests' ? (
-              <button className="button button-primary" onClick={() => setRequestEditorOpen(true)} disabled={!users.length}>
-                <Plus size={17} /> New request
-              </button>
-            ) : tab === 'current' || tab === 'demo' ? (
-              <button className="button button-primary" onClick={() => setUserEditor({ user: null, type: tab })}>
-                <Plus size={17} /> Add {tab === 'demo' ? 'demo user' : 'user'}
-              </button>
-            ) : null}
           </div>
 
           {flash && <div className={`flash-message flash-${flash.kind}`} role="status">{flash.kind === 'success' ? <Check size={16} /> : <CircleAlert size={16} />}{flash.text}</div>}
           {pageError && <div className="flash-message flash-error" role="alert"><CircleAlert size={16} />{pageError}</div>}
 
           {tab === 'current' || tab === 'demo' ? (
+            <>
+            {tab === 'current' && (
+              <section className="table-card">
+                <div className="table-toolbar">
+                  <div>
+                    <h2>Registered POS systems</h2>
+                    <p>{visibleRegisteredSystems.length} {visibleRegisteredSystems.length === 1 ? 'system' : 'systems'}</p>
+                  </div>
+                  <label className="search-box">
+                    <Search size={16} />
+                    <input
+                      placeholder="Search registered systems"
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                    />
+                  </label>
+                </div>
+                {loadingData ? (
+                  <div className="table-state"><LoaderCircle className="spin" size={21} /> Loading registered systems…</div>
+                ) : visibleRegisteredSystems.length === 0 ? (
+                  <div className="empty-state"><KeyRound size={25} /><strong>No registered systems found</strong><span>Systems converted from approved demo requests will appear here.</span></div>
+                ) : (
+                  <div className="table-scroll">
+                    <table>
+                      <thead><tr><th>POS USER</th><th>SYSTEM CODE</th><th>VERSION</th><th>STATUS</th><th>REGISTERED</th><th>ACTIVATED</th></tr></thead>
+                      <tbody>
+                        {visibleRegisteredSystems.map((system) => (
+                            <tr key={system.systemCode}>
+                              <td data-label="POS user"><strong>{system.username}</strong></td>
+                              <td data-label="System code"><code>{system.systemCode}</code></td>
+                              <td data-label="Version"><strong className="version-name">{system.appVersion}</strong></td>
+                              <td data-label="Status">
+                                <StatusPill tone={system.status === 'active' ? 'green' : 'amber'}>
+                                  {system.status === 'active' ? 'Active' : 'Pending activation'}
+                                </StatusPill>
+                              </td>
+                              <td data-label="Registered" className="date-cell">{formatDate(system.registeredAt)}</td>
+                              <td data-label="Activated" className="date-cell">{formatDate(system.activatedAt)}</td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+            )}
             <section className="table-card">
               <div className="table-toolbar">
                 <div><h2>{tab === 'demo' ? 'Demo account directory' : 'User directory'}</h2><p>{visibleUsers.length} {visibleUsers.length === 1 ? 'account' : 'accounts'}</p></div>
@@ -1059,7 +1003,7 @@ export default function AdminPortal() {
               {loadingData ? (
                 <div className="table-state"><LoaderCircle className="spin" size={21} /> Loading users…</div>
               ) : visibleUsers.length === 0 ? (
-                <div className="empty-state"><UserRoundX size={25} /><strong>No {tab === 'demo' ? 'demo' : 'current'} users found</strong><span>Add an account to see it here.</span></div>
+                <div className="empty-state"><UserRoundX size={25} /><strong>No {tab === 'demo' ? 'demo' : 'current'} users found</strong><span>No app user accounts are available.</span></div>
               ) : (
                 <div className="table-scroll">
                   <table>
@@ -1074,7 +1018,7 @@ export default function AdminPortal() {
                           <td data-label="Created" className="date-cell">{formatDate(user.createdAt)}</td>
                           <td data-label="Actions">
                             <div className="row-actions">
-                              <button className="icon-button" title="Edit user" aria-label={`Edit ${user.username}`} onClick={() => setUserEditor({ user, type: user.userType })} disabled={actionBusy}><Pencil size={16} /></button>
+                              <button className="icon-button" title="Edit user" aria-label={`Edit ${user.username}`} onClick={() => setUserEditor(user)} disabled={actionBusy}><Pencil size={16} /></button>
                               <button className="icon-button" title={user.disabled ? 'Enable sign-in' : 'Disable sign-in'} aria-label={`${user.disabled ? 'Enable' : 'Disable'} ${user.username}`} onClick={() => void handleToggleUser(user)} disabled={actionBusy}>{user.disabled ? <BadgeCheck size={16} /> : <UserRoundX size={16} />}</button>
                               <button className="icon-button icon-danger" title="Delete user" aria-label={`Delete ${user.username}`} onClick={() => void handleDeleteUser(user)} disabled={actionBusy}><Trash2 size={16} /></button>
                             </div>
@@ -1086,7 +1030,8 @@ export default function AdminPortal() {
                 </div>
               )}
             </section>
-          ) : tab === 'demo-requests' ? (
+            </>
+          ) : (
             <section className="demo-request-panel">
               <div className="demo-request-toolbar">
                 <div>
@@ -1140,7 +1085,10 @@ export default function AdminPortal() {
                               <span>{hardware?.deviceManufacturer || hardware?.deviceModel ? `${hardware.deviceManufacturer || ''} ${hardware.deviceModel || ''}`.trim() : 'Device details unavailable'}</span>
                               <span>Requested {formatDate(request.requestedAt)}</span>
                               {request.registeredSystem && (
-                                <span>Registered · {request.registeredVersion || 'Version unavailable'}</span>
+                                <span>
+                                  {request.registrationStatus === 'pending_activation' ? 'Registration pending' : 'Registered'}
+                                  {' · '}{request.registeredVersion || 'Version unavailable'}
+                                </span>
                               )}
                             </span>
                             {request.status === 'approved' && request.demoKey && (
@@ -1175,90 +1123,6 @@ export default function AdminPortal() {
                 </div>
               )}
             </section>
-          ) : tab === 'version-control' ? (
-            <section className="version-control-panel">
-              <div className="version-control-header">
-                <div>
-                  <h2>Allowed modules by version</h2>
-                  <p>Check only modules this version may use. Unchecked modules are blocked for every account on the registered system, including aptadmin. Online POS systems sync changes on their next status check.</p>
-                </div>
-                <button
-                  type="button"
-                  className="button button-primary"
-                  onClick={() => void handleSaveVersionControl()}
-                  disabled={actionBusy}
-                >
-                  {actionBusy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
-                  Save version settings
-                </button>
-              </div>
-              <div className="version-control-grid">
-                {APP_VERSIONS.map((version) => (
-                  <section className="version-control-card" key={version}>
-                    <div className="version-control-card-heading">
-                      <h3>{version}</h3>
-                      <span>{versionControl.allowedModules[version].length} of {APP_MODULES.length} modules</span>
-                    </div>
-                    <div className="version-module-list">
-                      {APP_MODULES.map((module) => (
-                        <label className="version-module-check" key={module.id}>
-                          <input
-                            type="checkbox"
-                            checked={versionControl.allowedModules[version].includes(module.id)}
-                            onChange={(event) => {
-                              setVersionControl((current) =>
-                                updateAllowedModule(current, version, module.id, event.target.checked)
-                              );
-                            }}
-                          />
-                          <span>{module.label}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </section>
-                ))}
-              </div>
-              <p className="version-control-note">
-                New installations allow all modules by default until you configure and save each version.
-              </p>
-            </section>
-          ) : (
-            <section className="table-card">
-              <div className="table-toolbar">
-                <div><h2>Activation request queue</h2><p>{requests.length} total requests</p></div>
-                <div className="request-toolbar-note"><Clock3 size={15} /> Approve a request to assign its requested app version.</div>
-              </div>
-              {loadingData ? (
-                <div className="table-state"><LoaderCircle className="spin" size={21} /> Loading requests…</div>
-              ) : requests.length === 0 ? (
-                <div className="empty-state"><FileClock size={25} /><strong>No activation requests yet</strong><span>Submit a request for a user to begin the review workflow.</span></div>
-              ) : (
-                <div className="table-scroll">
-                  <table>
-                    <thead><tr><th>USER</th><th>REQUESTED VERSION</th><th>REQUESTED</th><th>STATUS</th><th>NOTE</th><th className="actions-heading">ACTIONS</th></tr></thead>
-                    <tbody>
-                      {requests.map((request) => (
-                        <tr key={request.id}>
-                          <td data-label="User"><div className="user-cell"><span className="user-avatar avatar-request"><FileClock size={16} /></span><span><strong>{request.username}</strong><small>{request.email}</small></span></div></td>
-                          <td data-label="Requested version"><strong className="version-name">{request.appVersion}</strong></td>
-                          <td data-label="Requested" className="date-cell">{formatDate(request.requestedAt)}</td>
-                          <td data-label="Status"><StatusPill tone={request.status === 'approved' ? 'green' : request.status === 'rejected' ? 'red' : 'amber'}>{request.status}</StatusPill></td>
-                          <td data-label="Note" className="note-cell">{request.note || '—'}</td>
-                          <td data-label="Actions">
-                            {request.status === 'pending' ? (
-                              <div className="row-actions">
-                                <button className="button button-approve" onClick={() => void handleReviewRequest(request, 'approved')} disabled={actionBusy}><Check size={15} /> Approve</button>
-                                <button className="icon-button icon-danger" title="Reject request" aria-label="Reject request" onClick={() => void handleReviewRequest(request, 'rejected')} disabled={actionBusy}><X size={16} /></button>
-                              </div>
-                            ) : <span className="reviewed-note">Reviewed {formatDate(request.reviewedAt)}</span>}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </section>
           )}
           <footer className="page-footer"><span>Independent admin portal</span><span>Firebase Authentication · Cloud Firestore</span></footer>
         </section>
@@ -1266,19 +1130,10 @@ export default function AdminPortal() {
 
       {userEditor && (
         <UserEditor
-          user={userEditor.user}
-          defaultType={userEditor.type}
+          user={userEditor}
           busy={actionBusy}
           onClose={() => setUserEditor(null)}
           onSubmit={handleSaveUser}
-        />
-      )}
-      {requestEditorOpen && (
-        <ActivationRequestEditor
-          users={users}
-          busy={actionBusy}
-          onClose={() => setRequestEditorOpen(false)}
-          onSubmit={handleCreateRequest}
         />
       )}
       {selectedDemoRequest && (
@@ -1310,7 +1165,10 @@ export default function AdminPortal() {
               {selectedDemoRequest.registeredSystem && (
                 <div>
                   <span>Registration</span>
-                  <StatusPill tone="green">Registered · {selectedDemoRequest.registeredVersion || 'Version unavailable'}</StatusPill>
+                  <StatusPill tone={selectedDemoRequest.registrationStatus === 'pending_activation' ? 'amber' : 'green'}>
+                    {selectedDemoRequest.registrationStatus === 'pending_activation' ? 'Pending activation' : 'Registered'}
+                    {' · '}{selectedDemoRequest.registeredVersion || 'Version unavailable'}
+                  </StatusPill>
                 </div>
               )}
             </div>
@@ -1326,38 +1184,22 @@ export default function AdminPortal() {
               <h3>System registration</h3>
               {selectedDemoRequest.registeredSystem ? (
                 <p className="muted-copy">
-                  This system is registered on the {selectedDemoRequest.registeredVersion || 'selected'} version.
-                  Its available modules follow the saved version control settings.
+                  {selectedDemoRequest.registrationStatus === 'pending_activation'
+                    ? `The ${selectedDemoRequest.registeredVersion || 'selected'} registration is waiting for its key to be activated in aptPOS Settings.`
+                    : `This system is registered on the ${selectedDemoRequest.registeredVersion || 'selected'} version. Its available modules follow the saved version control settings.`}
                 </p>
               ) : selectedDemoRequest.status === 'approved' ? (
                 <>
                   <p className="muted-copy">
-                    Convert this demo installation to a registered system and assign its app version.
+                    Choose a version and create the owner login. aptPOS will activate the registration key on this system.
                   </p>
-                  <label className="version-conversion-control">
-                    Registered version
-                    <select
-                      required
-                      value={conversionVersion}
-                      onChange={(event) => {
-                        const version = APP_VERSIONS.find((item) => item === event.target.value);
-                        setConversionVersion(version || '');
-                      }}
-                      disabled={actionBusy}
-                    >
-                      <option value="">Choose a version</option>
-                      {APP_VERSIONS.map((version) => (
-                        <option key={version} value={version}>{version}</option>
-                      ))}
-                    </select>
-                  </label>
                   <button
                     type="button"
                     className="button button-primary"
-                    onClick={() => void handleConvertDemoSystem(selectedDemoRequest)}
-                    disabled={actionBusy || !conversionVersion}
+                    onClick={() => setConversionRequest(selectedDemoRequest)}
+                    disabled={actionBusy}
                   >
-                    {actionBusy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
+                    <Check size={16} />
                     Convert to Registered
                   </button>
                 </>
@@ -1512,6 +1354,51 @@ export default function AdminPortal() {
                 disabled={actionBusy}
               >
                 <Trash2 size={15} /> Delete all Firebase data
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {conversionRequest && (
+        <RegistrationConversionEditor
+          systemCode={conversionRequest.systemCode}
+          busy={actionBusy}
+          onClose={() => setConversionRequest(null)}
+          onSubmit={(input) => handleConvertDemoSystem(conversionRequest, input)}
+        />
+      )}
+      {registrationKeyResult && (
+        <div className="modal-backdrop" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setRegistrationKeyResult(null);
+        }}>
+          <section className="modal-card modal-card-narrow" role="dialog" aria-modal="true" aria-labelledby="registration-key-title">
+            <div className="modal-heading">
+              <div>
+                <p className="eyebrow">REGISTRATION KEY</p>
+                <h2 id="registration-key-title">Share this key with the customer</h2>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setRegistrationKeyResult(null)} aria-label="Close dialog">
+                <X size={18} />
+              </button>
+            </div>
+            <p className="muted-copy">
+              This key is for system <code>{registrationKeyResult.systemCode}</code>, version {registrationKeyResult.appVersion},
+              and owner <strong>{registrationKeyResult.username}</strong>. It is shown only once.
+            </p>
+            <label>
+              Registration key
+              <input readOnly value={registrationKeyResult.registrationKey} />
+            </label>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="button button-quiet"
+                onClick={() => void handleCopyRegistrationKey(registrationKeyResult.registrationKey)}
+              >
+                <KeyRound size={15} /> Copy key
+              </button>
+              <button type="button" className="button button-primary" onClick={() => setRegistrationKeyResult(null)}>
+                Done
               </button>
             </div>
           </section>

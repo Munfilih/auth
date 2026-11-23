@@ -1,14 +1,12 @@
 import type { User } from 'firebase/auth';
 import type {
-  ActivationRequest,
   AppVersion,
   AppUser,
-  CreateUserInput,
   DemoRequest,
   DemoSystemActivity,
+  RegisteredSystem,
   ReviewedDemoRequest,
   UpdateUserInput,
-  VersionControlSettings,
 } from './types';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/+$/, '') || '';
@@ -45,11 +43,8 @@ export async function getUsers(user: User): Promise<AppUser[]> {
   return request('/api/admin/users', user);
 }
 
-export async function createUser(user: User, input: CreateUserInput): Promise<AppUser> {
-  return request('/api/admin/users', user, {
-    method: 'POST',
-    body: JSON.stringify(input),
-  });
+export async function getRegisteredSystems(user: User): Promise<RegisteredSystem[]> {
+  return request('/api/admin/registered-systems', user);
 }
 
 export async function updateUser(
@@ -67,45 +62,6 @@ export async function deleteUser(user: User, uid: string): Promise<void> {
   await request(`/api/admin/users/${encodeURIComponent(uid)}`, user, { method: 'DELETE' });
 }
 
-export async function getActivationRequests(user: User): Promise<ActivationRequest[]> {
-  return request('/api/admin/activation-requests', user);
-}
-
-export async function getVersionControlSettings(user: User): Promise<VersionControlSettings> {
-  return request('/api/admin/version-control', user);
-}
-
-export async function saveVersionControlSettings(
-  user: User,
-  allowedModules: VersionControlSettings['allowedModules']
-): Promise<VersionControlSettings> {
-  return request('/api/admin/version-control', user, {
-    method: 'PUT',
-    body: JSON.stringify({ allowedModules }),
-  });
-}
-
-export async function createActivationRequest(
-  user: User,
-  input: { userId: string; appVersion: string; note: string }
-): Promise<ActivationRequest> {
-  return request('/api/admin/activation-requests', user, {
-    method: 'POST',
-    body: JSON.stringify(input),
-  });
-}
-
-export async function reviewActivationRequest(
-  user: User,
-  id: string,
-  status: 'approved' | 'rejected'
-): Promise<ActivationRequest> {
-  return request(`/api/admin/activation-requests/${encodeURIComponent(id)}`, user, {
-    method: 'PATCH',
-    body: JSON.stringify({ status }),
-  });
-}
-
 export async function getDemoRequests(user: User): Promise<DemoRequest[]> {
   return request('/api/admin/demo-requests', user);
 }
@@ -120,11 +76,11 @@ export async function getDemoSystemActivity(
 export async function convertDemoSystemToRegistered(
   user: User,
   requestId: string,
-  appVersion: AppVersion
-): Promise<{ systemCode: string; appVersion: AppVersion; registeredSystem: true }> {
+  input: { appVersion: AppVersion; username: string; password: string }
+): Promise<{ systemCode: string; appVersion: AppVersion; username: string; registrationKey: string }> {
   return request(`/api/admin/demo-requests/${encodeURIComponent(requestId)}/convert`, user, {
     method: 'POST',
-    body: JSON.stringify({ appVersion }),
+    body: JSON.stringify(input),
   });
 }
 

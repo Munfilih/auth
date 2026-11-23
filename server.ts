@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 import { applicationDefault, cert, getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth, type Auth, type DecodedIdToken } from 'firebase-admin/auth';
@@ -24,6 +24,7 @@ const app = express();
 const port = Number(process.env.PORT || process.env.ADMIN_API_PORT || 3002);
 const host = process.env.ADMIN_API_HOST || '127.0.0.1';
 const portalAdminEmail = (process.env.VITE_ADMIN_LOGIN_EMAIL || '').trim().toLowerCase();
+const versionControlApiKey = (process.env.VERSION_CONTROL_API_KEY || '').trim();
 const allowedPortalOrigins = new Set(
   (process.env.ADMIN_PORTAL_ORIGINS || '')
     .split(',')
@@ -410,6 +411,20 @@ const requirePortalAdmin: RequestHandler = (req, res, next) => {
   })().catch(next);
 };
 
+const requireVersionControlApiKey: RequestHandler = (req, res, next) => {
+  if (!versionControlApiKey) {
+    res.status(503).json({ error: 'VERSION_CONTROL_API_KEY is not configured on the Auth API.' });
+    return;
+  }
+  const provided = Buffer.from(req.header('x-version-control-key') || '');
+  const expected = Buffer.from(versionControlApiKey);
+  if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
+    res.status(401).json({ error: 'The POS version-control service key is invalid.' });
+    return;
+  }
+  next();
+};
+
 app.use('/api/admin', requirePortalAdmin);
 
 function getServices(): { auth: Auth; db: Firestore } {
@@ -553,6 +568,39 @@ class PortalRequestError extends Error {
   }
 }
 
+function parseVersionModulePolicy(value: unknown): VersionModulePolicy {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new PortalRequestError(400, 'Choose allowed modules for each app version.');
+  }
+  const modules = value as Record<string, unknown>;
+  try {
+    return {
+      Soft: parseModuleList(modules.Soft),
+      Silver: parseModuleList(modules.Silver),
+      Standard: parseModuleList(modules.Standard),
+    };
+  } catch (error) {
+    throw new PortalRequestError(
+      400,
+      error instanceof Error ? error.message : 'The module policy is invalid.'
+    );
+  }
+}
+
+async function saveVersionModulePolicy(
+  db: Firestore,
+  allowedModules: VersionModulePolicy,
+  updatedBy: string
+): Promise<VersionControlSettings> {
+  const updatedAt = new Date().toISOString();
+  await db.collection('versionControl').doc('settings').set({
+    allowedModules,
+    updatedAt: FieldValue.serverTimestamp(),
+    updatedBy,
+  });
+  return { allowedModules, updatedAt };
+}
+
 function isSystemCode(value: unknown): value is string {
   return typeof value === 'string' && (/^\d{10}$/.test(value.trim()) || /^APT(?:-[A-Z0-9]{4}){5}$/.test(value.trim()));
 }
@@ -561,8 +609,44 @@ function systemCodeId(systemCode: string): string {
   return createHash('sha256').update(`aptPOS-demo-system:${systemCode}`).digest('hex');
 }
 
+function registrationEncryptionKey(): Buffer {
+  if (!versionControlApiKey) {
+    throw new PortalRequestError(503, 'VERSION_CONTROL_API_KEY is required for registered-system activation.');
+  }
+  return createHash('sha256')
+    .update('aptpos-registration-credentials:v1:')
+    .update(versionControlApiKey)
+    .digest();
+}
+
+function encryptRegistrationCredentials(username: string, password: string) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', registrationEncryptionKey(), iv);
+  const encrypted = Buffer.concat([
+    cipher.update(JSON.stringify({ username, password }), 'utf8'),
+    cipher.final(),
+  ]);
+  return {
+    version: 1,
+    iv: iv.toString('base64'),
+    tag: cipher.getAuthTag().toString('base64'),
+    data: encrypted.toString('base64'),
+  };
+}
+
 function demoKeyHash(key: string): string {
   return createHash('sha256').update(key.trim()).digest('hex');
+}
+
+function registrationKeyHash(key: string): string {
+  return createHash('sha256').update(`aptPOS-registration-key:v1:${key.trim()}`).digest('hex');
+}
+
+function isRegistrationKeyValid(storedHash: unknown, key: string): boolean {
+  if (typeof storedHash !== 'string' || !/^[a-f0-9]{64}$/.test(storedHash)) return false;
+  const expected = Buffer.from(storedHash, 'hex');
+  const provided = Buffer.from(registrationKeyHash(key), 'hex');
+  return expected.length === provided.length && timingSafeEqual(expected, provided);
 }
 
 function createDemoKey(): string {
@@ -600,7 +684,12 @@ function mapDemoRequest(
     networkBytesReceived: numberOrZero(telemetryData?.networkBytesReceived),
     networkBytesSent: numberOrZero(telemetryData?.networkBytesSent),
     systemInfo: parseDemoSystemInfo(telemetryData?.systemInfo),
-    registeredSystem: registeredData?.status === 'active',
+    registeredSystem: registeredData?.status === 'active' || registeredData?.status === 'pending_activation',
+    registrationStatus: registeredData?.status === 'pending_activation'
+      ? 'pending_activation' as const
+      : registeredData?.status === 'active'
+        ? 'active' as const
+        : undefined,
     registeredVersion: APP_VERSIONS.find((version) => version === registeredData?.appVersion),
     keyUsed: data.keyUsed === true,
     hardwareInfo: typeof data.hardwareInfo === 'object' && data.hardwareInfo !== null ? data.hardwareInfo : undefined,
@@ -609,6 +698,126 @@ function mapDemoRequest(
 
 app.get('/api/admin/session', (_req, res) => {
   res.json({ username: res.locals.adminUsername || 'aptadmin' });
+});
+
+app.get('/api/registration/version-control', requireVersionControlApiKey, async (_req, res, next) => {
+  try {
+    const { db } = getServices();
+    res.json(await getVersionControlSettings(db));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put('/api/registration/version-control', requireVersionControlApiKey, async (req, res, next) => {
+  try {
+    const { db } = getServices();
+    const input = req.body as Record<string, unknown>;
+    const allowedModules = parseVersionModulePolicy(input.allowedModules);
+    res.json(await saveVersionModulePolicy(db, allowedModules, 'aptPOS'));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/registration/key/prepare', requireVersionControlApiKey, async (req, res, next) => {
+  try {
+    const systemCode = typeof req.body?.systemCode === 'string'
+      ? req.body.systemCode.trim().toUpperCase()
+      : '';
+    const registrationKey = typeof req.body?.registrationKey === 'string'
+      ? req.body.registrationKey.trim()
+      : '';
+    if (!isSystemCode(systemCode) || registrationKey.length < 24 || registrationKey.length > 128) {
+      throw new PortalRequestError(400, 'Enter a valid system code and registration key.');
+    }
+
+    const { db } = getServices();
+    const snapshot = await db.collection('registeredSystems').doc(systemCodeId(systemCode)).get();
+    const data = snapshot.data();
+    if (!snapshot.exists || data?.systemCode !== systemCode) {
+      throw new PortalRequestError(404, 'No registration was found for this system code.');
+    }
+    if (!isRegistrationKeyValid(data.registrationKeyHash, registrationKey)) {
+      throw new PortalRequestError(401, 'The registration key is invalid for this system.');
+    }
+    const appVersion = APP_VERSIONS.find((version) => version === data.appVersion);
+    if (!appVersion) throw new Error('The registered system has an invalid app version.');
+
+    if (data.status === 'active') {
+      res.json({
+        active: true,
+        appVersion,
+        username: typeof data.username === 'string' ? data.username : '',
+      });
+      return;
+    }
+    if (data.status !== 'pending_activation') {
+      throw new PortalRequestError(409, 'This registration is no longer available.');
+    }
+
+    const credentials = data.credentialsCiphertext;
+    if (
+      typeof credentials !== 'object' ||
+      credentials === null ||
+      credentials.version !== 1 ||
+      typeof credentials.iv !== 'string' ||
+      typeof credentials.tag !== 'string' ||
+      typeof credentials.data !== 'string'
+    ) {
+      throw new Error('The registration credentials are unavailable.');
+    }
+    res.json({
+      active: false,
+      appVersion,
+      username: typeof data.username === 'string' ? data.username : '',
+      credentials,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/registration/key/activate', requireVersionControlApiKey, async (req, res, next) => {
+  try {
+    const systemCode = typeof req.body?.systemCode === 'string'
+      ? req.body.systemCode.trim().toUpperCase()
+      : '';
+    const registrationKey = typeof req.body?.registrationKey === 'string'
+      ? req.body.registrationKey.trim()
+      : '';
+    if (!isSystemCode(systemCode) || registrationKey.length < 24 || registrationKey.length > 128) {
+      throw new PortalRequestError(400, 'Enter a valid system code and registration key.');
+    }
+
+    const { db } = getServices();
+    const registrationRef = db.collection('registeredSystems').doc(systemCodeId(systemCode));
+    const result = await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(registrationRef);
+      const data = snapshot.data();
+      if (!snapshot.exists || data?.systemCode !== systemCode) {
+        throw new PortalRequestError(404, 'No registration was found for this system code.');
+      }
+      if (!isRegistrationKeyValid(data.registrationKeyHash, registrationKey)) {
+        throw new PortalRequestError(401, 'The registration key is invalid for this system.');
+      }
+      const appVersion = APP_VERSIONS.find((version) => version === data.appVersion);
+      if (!appVersion) throw new Error('The registered system has an invalid app version.');
+      if (data.status === 'pending_activation') {
+        transaction.update(registrationRef, {
+          status: 'active',
+          activatedAt: FieldValue.serverTimestamp(),
+          credentialsCiphertext: FieldValue.delete(),
+        });
+      } else if (data.status !== 'active') {
+        throw new PortalRequestError(409, 'This registration is no longer available.');
+      }
+      return { registered: true as const, appVersion };
+    });
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get('/api/admin/version-control', async (_req, res, next) => {
@@ -624,33 +833,8 @@ app.put('/api/admin/version-control', async (req, res, next) => {
   try {
     const { db } = getServices();
     const input = req.body as Record<string, unknown>;
-    const source = input.allowedModules;
-    if (typeof source !== 'object' || source === null || Array.isArray(source)) {
-      throw new PortalRequestError(400, 'Choose allowed modules for each app version.');
-    }
-
-    let allowedModules: VersionModulePolicy;
-    try {
-      const modules = source as Record<string, unknown>;
-      allowedModules = {
-        Soft: parseModuleList(modules.Soft),
-        Silver: parseModuleList(modules.Silver),
-        Standard: parseModuleList(modules.Standard),
-      };
-    } catch (error) {
-      throw new PortalRequestError(
-        400,
-        error instanceof Error ? error.message : 'The module policy is invalid.'
-      );
-    }
-
-    const updatedAt = new Date().toISOString();
-    await db.collection('versionControl').doc('settings').set({
-      allowedModules,
-      updatedAt: FieldValue.serverTimestamp(),
-      updatedBy: String(res.locals.adminUid),
-    });
-    res.json({ allowedModules, updatedAt });
+    const allowedModules = parseVersionModulePolicy(input.allowedModules);
+    res.json(await saveVersionModulePolicy(db, allowedModules, String(res.locals.adminUid)));
   } catch (error) {
     next(error);
   }
@@ -677,6 +861,38 @@ app.get('/api/admin/users', async (_req, res, next) => {
       })
       .sort((left, right) => (right.createdAt || '').localeCompare(left.createdAt || ''));
     res.json(users);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/admin/registered-systems', async (_req, res, next) => {
+  try {
+    const { db } = getServices();
+    const snapshot = await db.collection('registeredSystems').get();
+    const systems = snapshot.docs
+      .map((document) => {
+        const data = document.data();
+        const appVersion = APP_VERSIONS.find((version) => version === data.appVersion);
+        const status = data.status === 'active' || data.status === 'pending_activation'
+          ? data.status
+          : null;
+        const systemCode = typeof data.systemCode === 'string'
+          ? data.systemCode.trim().toUpperCase()
+          : '';
+        if (!status || !appVersion || !isSystemCode(systemCode)) return null;
+        return {
+          systemCode,
+          username: typeof data.username === 'string' ? data.username : '',
+          appVersion,
+          status,
+          registeredAt: toIsoDate(data.convertedAt),
+          activatedAt: toIsoDate(data.activatedAt),
+        };
+      })
+      .filter((system): system is NonNullable<typeof system> => system !== null)
+      .sort((left, right) => (right.registeredAt || '').localeCompare(left.registeredAt || ''));
+    res.json(systems);
   } catch (error) {
     next(error);
   }
@@ -1021,8 +1237,16 @@ app.post('/api/admin/demo-requests/:id/convert', async (req, res, next) => {
   try {
     const { db } = getServices();
     const appVersion = APP_VERSIONS.find((version) => version === req.body?.appVersion);
+    const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
     if (!appVersion) {
       throw new PortalRequestError(400, 'Choose Standard, Silver, or Soft for this system.');
+    }
+    if (!/^[A-Za-z0-9._-]{3,32}$/.test(username) || username.toLowerCase() === 'aptadmin') {
+      throw new PortalRequestError(400, 'Choose a username with 3-32 letters, numbers, dots, underscores, or hyphens. aptadmin is reserved.');
+    }
+    if (password.length < 8 || password.length > 128) {
+      throw new PortalRequestError(400, 'The registered-system password must be 8-128 characters.');
     }
 
     const requestRef = db.collection('demoRequests').doc(req.params.id);
@@ -1045,6 +1269,8 @@ app.post('/api/admin/demo-requests/:id/convert', async (req, res, next) => {
     const registeredRef = db.collection('registeredSystems').doc(systemId);
     const demoLicenseRef = db.collection('demoLicenses').doc(systemId);
     const adminUid = String(res.locals.adminUid);
+    const registrationKey = randomBytes(32).toString('base64url');
+    const credentialsCiphertext = encryptRegistrationCredentials(username, password);
     await db.runTransaction(async (transaction) => {
       const [currentRequest, currentRegistration] = await Promise.all([
         transaction.get(requestRef),
@@ -1063,8 +1289,11 @@ app.post('/api/admin/demo-requests/:id/convert', async (req, res, next) => {
       const convertedAt = FieldValue.serverTimestamp();
       transaction.set(registeredRef, {
         systemCode,
-        status: 'active',
+        status: 'pending_activation',
         appVersion,
+        username,
+        registrationKeyHash: registrationKeyHash(registrationKey),
+        credentialsCiphertext,
         convertedAt,
         convertedBy: adminUid,
         sourceRequestId: requestRef.id,
@@ -1079,12 +1308,14 @@ app.post('/api/admin/demo-requests/:id/convert', async (req, res, next) => {
       transaction.update(requestRef, {
         convertedToRegistered: true,
         registeredVersion: appVersion,
+        registrationStatus: 'pending_activation',
+        registrationUsername: username,
         convertedAt,
         convertedBy: adminUid,
       });
     });
 
-    res.json({ systemCode, appVersion, registeredSystem: true });
+    res.json({ systemCode, appVersion, username, registrationKey, registeredSystem: true });
   } catch (error) {
     next(error);
   }
