@@ -109,3 +109,20 @@ export async function regenerateDemoRequestKey(user: User, id: string): Promise<
     method: 'POST',
   });
 }
+
+export async function deactivateDemoRequest(user: User, id: string): Promise<{ request: DemoRequest }> {
+  return request(`/api/admin/demo-requests/${encodeURIComponent(id)}/deactivate`, user, {
+    method: 'POST',
+  });
+}
+
+export async function extendDemoRequest(
+  user: User,
+  id: string,
+  days = 2
+): Promise<{ request: DemoRequest; newExpiresAt: string }> {
+  return request(`/api/admin/demo-requests/${encodeURIComponent(id)}/extend`, user, {
+    method: 'POST',
+    body: JSON.stringify({ days }),
+  });
+}

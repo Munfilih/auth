@@ -119,6 +119,15 @@ app.post('/api/registration/demo-requests', async (req, res, next) => {
       return;
     }
 
+    let hardwareInfo: Record<string, unknown> | null = null;
+    if (typeof req.body?.hardwareInfo === 'string') {
+      try {
+        hardwareInfo = JSON.parse(req.body.hardwareInfo);
+      } catch {
+        // ignore parse error
+      }
+    }
+
     const requestRef = db.collection('demoRequests').doc();
     await requestRef.set({
       requestType,
@@ -131,6 +140,7 @@ app.post('/api/registration/demo-requests', async (req, res, next) => {
       keyUsed: false,
       redeemedAt: null,
       expiresAt: null,
+      ...(hardwareInfo ? { hardwareInfo } : {}),
     });
     res.status(201).json({
       requestId: requestRef.id,
@@ -233,6 +243,40 @@ app.post('/api/registration/demo-activation', async (req, res, next) => {
     });
 
     res.json({ expiresAt: activationExpiresAt });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/registration/demo-status-check', async (req, res, next) => {
+  try {
+    const systemCode = typeof req.body?.systemCode === 'string'
+      ? req.body.systemCode.trim().toUpperCase()
+      : '';
+    if (!isSystemCode(systemCode)) {
+      res.status(400).json({ error: 'Valid system code required.' });
+      return;
+    }
+
+    const { db } = getServices();
+    const licenseRef = db.collection('demoLicenses').doc(systemCodeId(systemCode));
+    const snap = await licenseRef.get();
+    if (!snap.exists) {
+      res.json({ active: false, expiresAt: null });
+      return;
+    }
+
+    const data = snap.data();
+    if (data?.revoked === true) {
+      res.json({ active: false, expiresAt: null, revoked: true });
+      return;
+    }
+
+    const expiresAt = data?.expiresAt instanceof Timestamp
+      ? data.expiresAt.toDate().toISOString()
+      : null;
+    const isStillActive = expiresAt ? Date.parse(expiresAt) > Date.now() : false;
+    res.json({ active: isStillActive, expiresAt });
   } catch (error) {
     next(error);
   }
@@ -352,6 +396,7 @@ function mapDemoRequest(id: string, data: Record<string, unknown>) {
     redeemedAt: toIsoDate(data.redeemedAt),
     expiresAt: toIsoDate(data.expiresAt),
     keyUsed: data.keyUsed === true,
+    hardwareInfo: typeof data.hardwareInfo === 'object' && data.hardwareInfo !== null ? data.hardwareInfo : undefined,
   };
 }
 
@@ -778,6 +823,96 @@ app.post('/api/admin/demo-requests/:id/key', async (req, res, next) => {
       });
     });
     res.json({ demoKey });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/admin/demo-requests/:id/deactivate', async (req, res, next) => {
+  try {
+    const { db } = getServices();
+    const requestRef = db.collection('demoRequests').doc(req.params.id);
+    const snap = await requestRef.get();
+    if (!snap.exists) {
+      throw new PortalRequestError(404, 'Demo request not found.');
+    }
+    const data = snap.data();
+    const systemCode = String(data?.systemCode || '');
+    if (!systemCode) {
+      throw new PortalRequestError(400, 'Request does not have a valid system code.');
+    }
+
+    await db.runTransaction(async (transaction) => {
+      const licenseRef = db.collection('demoLicenses').doc(systemCodeId(systemCode));
+      transaction.set(licenseRef, {
+        revoked: true,
+        revokedAt: FieldValue.serverTimestamp(),
+        revokedBy: String(res.locals.adminUid || ''),
+      }, { merge: true });
+
+      transaction.update(requestRef, {
+        status: 'rejected',
+        deactivatedAt: FieldValue.serverTimestamp(),
+      });
+    });
+
+    const updated = (await requestRef.get()).data();
+    res.json({ request: mapDemoRequest(requestRef.id, updated || {}) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/admin/demo-requests/:id/extend', async (req, res, next) => {
+  try {
+    const { db } = getServices();
+    const daysToAdd = Math.max(1, Math.min(30, Number(req.body?.days || 2)));
+    const requestRef = db.collection('demoRequests').doc(req.params.id);
+    const snap = await requestRef.get();
+    if (!snap.exists) {
+      throw new PortalRequestError(404, 'Demo request not found.');
+    }
+    const data = snap.data();
+    const systemCode = String(data?.systemCode || '');
+    if (!systemCode) {
+      throw new PortalRequestError(400, 'Request does not have a valid system code.');
+    }
+
+    const licenseRef = db.collection('demoLicenses').doc(systemCodeId(systemCode));
+    const licenseSnap = await licenseRef.get();
+    const licenseData = licenseSnap.data();
+
+    let baseTime = Date.now();
+    if (licenseData?.expiresAt instanceof Timestamp) {
+      const existingMs = licenseData.expiresAt.toMillis();
+      if (existingMs > baseTime) {
+        baseTime = existingMs;
+      }
+    }
+
+    const newExpiry = new Date(baseTime + daysToAdd * 24 * 60 * 60 * 1000);
+
+    await db.runTransaction(async (transaction) => {
+      transaction.set(licenseRef, {
+        systemCode,
+        requestId: requestRef.id,
+        expiresAt: Timestamp.fromDate(newExpiry),
+        revoked: false,
+        extendedAt: FieldValue.serverTimestamp(),
+        extendedBy: String(res.locals.adminUid || ''),
+      }, { merge: true });
+
+      transaction.update(requestRef, {
+        expiresAt: Timestamp.fromDate(newExpiry),
+        status: 'approved',
+      });
+    });
+
+    const updated = (await requestRef.get()).data();
+    res.json({
+      request: mapDemoRequest(requestRef.id, updated || {}),
+      newExpiresAt: newExpiry.toISOString(),
+    });
   } catch (error) {
     next(error);
   }

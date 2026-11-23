@@ -24,7 +24,9 @@ import {
 import {
   createActivationRequest,
   createUser,
+  deactivateDemoRequest,
   deleteUser,
+  extendDemoRequest,
   getActivationRequests,
   getDemoRequests,
   getUsers,
@@ -588,6 +590,43 @@ export default function AdminPortal() {
     }
   };
 
+  const handleDeactivateDemo = async (request: DemoRequest) => {
+    if (!authUser || !window.confirm(`Deactivate demo license for system code ${request.systemCode}? The user will immediately lose demo access.`)) {
+      return;
+    }
+    setActionBusy(true);
+    try {
+      await deactivateDemoRequest(authUser, request.id);
+      await loadData(authUser);
+      notify('success', `Demo deactivated for system ${request.systemCode}.`);
+    } catch (error) {
+      notify('error', messageFrom(error));
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleExtendDemo = async (request: DemoRequest, days = 2) => {
+    if (!authUser) return;
+    const daysInput = window.prompt(`How many days to extend the demo for system ${request.systemCode}?`, String(days));
+    if (daysInput === null) return;
+    const parsedDays = Number(daysInput);
+    if (!Number.isFinite(parsedDays) || parsedDays < 1) {
+      notify('error', 'Enter a valid number of days (at least 1).');
+      return;
+    }
+    setActionBusy(true);
+    try {
+      const result = await extendDemoRequest(authUser, request.id, parsedDays);
+      await loadData(authUser);
+      notify('success', `Demo extended by ${parsedDays} day(s). New expiration: ${new Date(result.newExpiresAt).toLocaleString()}`);
+    } catch (error) {
+      notify('error', messageFrom(error));
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   const currentUsers = useMemo(
     () => users.filter((user) => user.userType === 'current'),
     [users]
@@ -832,13 +871,31 @@ export default function AdminPortal() {
               ) : (
                 <div className="table-scroll">
                   <table>
-                    <thead><tr><th>TYPE</th><th>REQUESTED BY</th><th>SYSTEM CODE</th><th>REQUESTED</th><th>STATUS</th><th>DEMO ACCESS</th><th className="actions-heading">ACTIONS</th></tr></thead>
+                    <thead><tr><th>TYPE</th><th>REQUESTED BY</th><th>SYSTEM & DEVICE</th><th>REQUESTED</th><th>STATUS</th><th>DEMO ACCESS</th><th className="actions-heading">ACTIONS</th></tr></thead>
                     <tbody>
                       {demoRequests.map((request) => (
                         <tr key={request.id}>
                           <td data-label="Type"><StatusPill tone={request.requestType === 'extension' ? 'neutral' : 'blue'}>{request.requestType === 'extension' ? 'Demo extension' : 'Demo activation'}</StatusPill></td>
                           <td data-label="Requested by">{request.requestedBy}</td>
-                          <td data-label="System code" className="date-cell"><code>{request.systemCode}</code></td>
+                          <td data-label="System & Device" className="date-cell">
+                            <div><strong><code>{request.systemCode}</code></strong></div>
+                            {request.hardwareInfo && (
+                              <div className="hardware-details" style={{ fontSize: '11px', color: '#64748b', marginTop: '2px', lineHeight: '1.3' }}>
+                                {request.hardwareInfo.deviceManufacturer || request.hardwareInfo.deviceModel ? (
+                                  <div>💻 {request.hardwareInfo.deviceManufacturer} {request.hardwareInfo.deviceModel}</div>
+                                ) : null}
+                                {request.hardwareInfo.osCaption ? (
+                                  <div>🪟 {request.hardwareInfo.osCaption}</div>
+                                ) : null}
+                                {request.hardwareInfo.cpuModel ? (
+                                  <div>⚡ {request.hardwareInfo.cpuModel} ({request.hardwareInfo.cpuCores} cores) · {request.hardwareInfo.totalMemoryGb} GB RAM</div>
+                                ) : null}
+                                {request.hardwareInfo.biosSerial ? (
+                                  <div>🏷️ S/N: {request.hardwareInfo.biosSerial}</div>
+                                ) : null}
+                              </div>
+                            )}
+                          </td>
                           <td data-label="Requested" className="date-cell">{formatDate(request.requestedAt)}</td>
                           <td data-label="Status"><StatusPill tone={request.status === 'approved' ? 'green' : request.status === 'rejected' ? 'red' : 'amber'}>{request.status}</StatusPill></td>
                           <td data-label="Demo access" className="date-cell">
@@ -857,13 +914,30 @@ export default function AdminPortal() {
                                 <input className="w-64 rounded border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-xs" readOnly value={issuedDemoKeys[request.id]} aria-label="Generated demo key" />
                                 <button className="button button-quiet" onClick={() => void handleCopyDemoKey(issuedDemoKeys[request.id])}><Check size={15} /> Copy key</button>
                               </div>
-                            ) : request.status === 'approved' && !request.keyUsed ? (
-                              <button className="button button-quiet" onClick={() => void handleRegenerateDemoKey(request)} disabled={actionBusy}>
-                                <KeyRound size={15} /> Generate replacement key
-                              </button>
-                            ) : request.reviewedAt ? (
-                              <span className="reviewed-note">Reviewed {formatDate(request.reviewedAt)}</span>
-                            ) : null}
+                            ) : (
+                              <div className="row-actions" style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                {request.status === 'approved' && !request.keyUsed && (
+                                  <button className="button button-quiet" onClick={() => void handleRegenerateDemoKey(request)} disabled={actionBusy} title="Generate replacement key">
+                                    <KeyRound size={15} /> Replace key
+                                  </button>
+                                )}
+                                {request.status === 'approved' && (
+                                  <>
+                                    <button className="button button-quiet" style={{ color: '#16a34a' }} onClick={() => void handleExtendDemo(request)} disabled={actionBusy} title="Extend demo validity by days">
+                                      <Clock3 size={15} /> Extend
+                                    </button>
+                                    <button className="button button-quiet" style={{ color: '#dc2626' }} onClick={() => void handleDeactivateDemo(request)} disabled={actionBusy} title="Deactivate demo immediately">
+                                      <UserRoundX size={15} /> Deactivate
+                                    </button>
+                                  </>
+                                )}
+                                {request.status === 'rejected' && (
+                                  <button className="button button-quiet" style={{ color: '#16a34a' }} onClick={() => void handleExtendDemo(request)} disabled={actionBusy} title="Reactivate demo by extending days">
+                                    <Clock3 size={15} /> Reactivate
+                                  </button>
+                                )}
+                              </div>
+                            )}
                           </td>
                         </tr>
                       ))}

@@ -31,6 +31,19 @@ export interface ActivationRequest {
 export type DemoRequestType = 'demo' | 'extension';
 export type DemoRequestStatus = 'pending' | 'approved' | 'rejected';
 
+export interface HardwareInfo {
+  hostname?: string;
+  osPlatform?: string;
+  osRelease?: string;
+  cpuModel?: string;
+  cpuCores?: number;
+  totalMemoryGb?: number;
+  deviceModel?: string;
+  deviceManufacturer?: string;
+  osCaption?: string;
+  biosSerial?: string;
+}
+
 export interface DemoRequest {
   id: string;
   requestType: DemoRequestType;
@@ -43,6 +56,7 @@ export interface DemoRequest {
   redeemedAt: string | null;
   expiresAt: string | null;
   keyUsed: boolean;
+  hardwareInfo?: HardwareInfo;
 }
 
 export interface ReviewedDemoRequest {
