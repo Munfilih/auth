@@ -4,6 +4,7 @@ import type {
   AppUser,
   CreateUserInput,
   DemoRequest,
+  DemoSystemActivity,
   ReviewedDemoRequest,
   UpdateUserInput,
 } from './types';
@@ -93,6 +94,13 @@ export async function getDemoRequests(user: User): Promise<DemoRequest[]> {
   return request('/api/admin/demo-requests', user);
 }
 
+export async function getDemoSystemActivity(
+  user: User,
+  requestId: string
+): Promise<DemoSystemActivity> {
+  return request(`/api/admin/demo-requests/${encodeURIComponent(requestId)}/activity`, user);
+}
+
 export async function updateDemoRequestExpiry(
   user: User,
   requestId: string,
@@ -113,6 +121,8 @@ export async function deleteDemoSystemData(
   deletedRequestIds: string[];
   deletedKeyClaims: number;
   deletedLicenses: number;
+  deletedLoginEvents: number;
+  deletedTelemetryRecords: number;
   authAccountsDeleted: number;
 }> {
   return request(`/api/admin/demo-requests/${encodeURIComponent(requestId)}/system-data`, user, {

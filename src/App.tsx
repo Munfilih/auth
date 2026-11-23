@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
-  Activity,
   ArrowUpRight,
   BadgeCheck,
   Check,
@@ -31,6 +30,7 @@ import {
   extendDemoRequest,
   getActivationRequests,
   getDemoRequests,
+  getDemoSystemActivity,
   getUsers,
   regenerateDemoRequestKey,
   reviewActivationRequest,
@@ -53,6 +53,7 @@ import type {
   AppVersion,
   CreateUserInput,
   DemoRequest,
+  DemoSystemActivity,
   UpdateUserInput,
   ReviewedDemoRequest,
   UserRole,
@@ -90,6 +91,17 @@ function dateTimeLocalValue(value: string | null): string {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return '';
   return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
+function formatBytes(bytes: number): string {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let amount = Math.max(0, bytes);
+  let unitIndex = 0;
+  while (amount >= 1024 && unitIndex < units.length - 1) {
+    amount /= 1024;
+    unitIndex += 1;
+  }
+  return `${amount.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
 function StatusPill({ children, tone = 'neutral' }: {
@@ -313,6 +325,9 @@ export default function AdminPortal() {
   const [users, setUsers] = useState<AppUser[]>([]);
   const [requests, setRequests] = useState<ActivationRequest[]>([]);
   const [demoRequests, setDemoRequests] = useState<DemoRequest[]>([]);
+  const [demoSystemActivity, setDemoSystemActivity] = useState<DemoSystemActivity | null>(null);
+  const [loadingDemoActivity, setLoadingDemoActivity] = useState(false);
+  const [demoActivityError, setDemoActivityError] = useState('');
   const [issuedDemoKeys, setIssuedDemoKeys] = useState<Record<string, string>>({});
   const [loadingData, setLoadingData] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
@@ -348,6 +363,32 @@ export default function AdminPortal() {
       setLoadingData(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (!authUser || !selectedDemoRequestId) {
+      setDemoSystemActivity(null);
+      setDemoActivityError('');
+      setLoadingDemoActivity(false);
+      return;
+    }
+
+    let active = true;
+    setLoadingDemoActivity(true);
+    setDemoActivityError('');
+    void getDemoSystemActivity(authUser, selectedDemoRequestId)
+      .then((activity) => {
+        if (active) setDemoSystemActivity(activity);
+      })
+      .catch((error: unknown) => {
+        if (active) setDemoActivityError(messageFrom(error));
+      })
+      .finally(() => {
+        if (active) setLoadingDemoActivity(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [authUser, selectedDemoRequestId]);
 
   useEffect(() => {
     const auth = firebaseAuth;
@@ -645,7 +686,7 @@ export default function AdminPortal() {
       await loadData(authUser);
       notify(
         'success',
-        `Deleted ${result.deletedRequests} request(s), ${result.deletedKeyClaims} key claim(s), and ${result.deletedLicenses} license(s) for ${result.systemCode}. Firebase Auth accounts were preserved.`
+        `Deleted ${result.deletedRequests} request(s), ${result.deletedKeyClaims} key claim(s), ${result.deletedLicenses} license(s), ${result.deletedLoginEvents} login record(s), and ${result.deletedTelemetryRecords} telemetry summary(s) for ${result.systemCode}. Firebase Auth accounts were preserved.`
       );
     } catch (error) {
       notify('error', messageFrom(error));
@@ -916,13 +957,6 @@ export default function AdminPortal() {
             ) : null}
           </div>
 
-          <div className="stats-grid">
-            <div className="stat-card"><span className="stat-icon stat-blue"><Users size={18} /></span><span className="stat-label">Current users</span><strong>{currentUsers.length}</strong><small>Firebase accounts</small></div>
-            <div className="stat-card"><span className="stat-icon stat-violet"><UserRoundPlus size={18} /></span><span className="stat-label">Demo users</span><strong>{demoUsers.length}</strong><small>Trial access accounts</small></div>
-            <div className="stat-card"><span className="stat-icon stat-amber"><Clock3 size={18} /></span><span className="stat-label">Pending requests</span><strong>{pendingRequests}</strong><small>Awaiting a decision</small></div>
-            <div className="stat-card"><span className="stat-icon stat-green"><Activity size={18} /></span><span className="stat-label">Enabled accounts</span><strong>{users.filter((user) => !user.disabled).length}</strong><small>Sign-in enabled</small></div>
-          </div>
-
           {flash && <div className={`flash-message flash-${flash.kind}`} role="status">{flash.kind === 'success' ? <Check size={16} /> : <CircleAlert size={16} />}{flash.text}</div>}
           {pageError && <div className="flash-message flash-error" role="alert"><CircleAlert size={16} />{pageError}</div>}
 
@@ -1023,6 +1057,7 @@ export default function AdminPortal() {
                           <span className="demo-request-last-login">
                             <span>Last logged in</span>
                             <strong>{formatDate(request.lastLoggedInAt)}</strong>
+                            <small>Total logins: {request.totalLogins}</small>
                           </span>
                           <ChevronRight className="demo-request-chevron" size={18} />
                         </button>
@@ -1136,6 +1171,72 @@ export default function AdminPortal() {
               <div><dt>Reviewed</dt><dd>{selectedDemoRequest.reviewedAt ? formatDate(selectedDemoRequest.reviewedAt) : 'Not reviewed'}</dd></div>
               {selectedDemoRequest.expiresAt && <div><dt>Expiration</dt><dd>{formatDate(selectedDemoRequest.expiresAt)}</dd></div>}
             </dl>
+
+            <div className="hardware-detail-card">
+              <h3>System activity</h3>
+              {loadingDemoActivity ? (
+                <p className="muted-copy">Loading system activity…</p>
+              ) : demoActivityError ? (
+                <p className="inline-error" role="alert">{demoActivityError}</p>
+              ) : demoSystemActivity ? (
+                <>
+                  <dl className="demo-detail-grid">
+                    <div><dt>Last logged in</dt><dd>{formatDate(demoSystemActivity.lastLoggedInAt)}</dd></div>
+                    <div><dt>Total logins</dt><dd>{demoSystemActivity.totalLogins}</dd></div>
+                    <div><dt>Status checks</dt><dd>{demoSystemActivity.totalStatusChecks}</dd></div>
+                    <div>
+                      <dt>Demo API network usage</dt>
+                      <dd>
+                        {formatBytes(demoSystemActivity.networkBytesReceived + demoSystemActivity.networkBytesSent)}
+                        <small> · {formatBytes(demoSystemActivity.networkBytesReceived)} received / {formatBytes(demoSystemActivity.networkBytesSent)} sent</small>
+                      </dd>
+                    </div>
+                  </dl>
+                  {demoSystemActivity.systemInfo && (
+                    <>
+                      <h3 className="demo-system-info-heading">Latest system details</h3>
+                      <dl>
+                        {demoSystemActivity.systemInfo.hostname && <div><dt>Hostname</dt><dd>{demoSystemActivity.systemInfo.hostname}</dd></div>}
+                        {demoSystemActivity.systemInfo.osPlatform && <div><dt>Platform</dt><dd>{demoSystemActivity.systemInfo.osPlatform}</dd></div>}
+                        {demoSystemActivity.systemInfo.osRelease && <div><dt>OS release</dt><dd>{demoSystemActivity.systemInfo.osRelease}</dd></div>}
+                        {demoSystemActivity.systemInfo.architecture && <div><dt>Architecture</dt><dd>{demoSystemActivity.systemInfo.architecture}</dd></div>}
+                        {demoSystemActivity.systemInfo.cpuModel && <div><dt>Processor</dt><dd>{demoSystemActivity.systemInfo.cpuModel}</dd></div>}
+                        {demoSystemActivity.systemInfo.cpuCores && <div><dt>CPU cores</dt><dd>{demoSystemActivity.systemInfo.cpuCores}</dd></div>}
+                        {demoSystemActivity.systemInfo.totalMemoryGb && <div><dt>Memory</dt><dd>{demoSystemActivity.systemInfo.totalMemoryGb} GB RAM</dd></div>}
+                      </dl>
+                    </>
+                  )}
+                  <h3 className="demo-system-info-heading">Recent login history</h3>
+                  {demoSystemActivity.recentLogins.length === 0 ? (
+                    <p className="muted-copy">No login history has been recorded yet.</p>
+                  ) : (
+                    <div className="demo-login-history">
+                      {demoSystemActivity.recentLogins.map((login) => (
+                        <div key={login.id}>
+                          <strong>{formatDate(login.loggedInAt)}</strong>
+                          <small>{formatBytes(login.networkBytesReceived)} received · {formatBytes(login.networkBytesSent)} sent</small>
+                          {login.systemInfo && (
+                            <small>
+                              {[
+                                login.systemInfo.hostname,
+                                login.systemInfo.osPlatform,
+                                login.systemInfo.osRelease,
+                                login.systemInfo.architecture,
+                                login.systemInfo.cpuModel,
+                                login.systemInfo.cpuCores ? `${login.systemInfo.cpuCores} cores` : undefined,
+                                login.systemInfo.totalMemoryGb ? `${login.systemInfo.totalMemoryGb} GB RAM` : undefined,
+                              ]
+                                .filter(Boolean)
+                                .join(' · ')}
+                            </small>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : null}
+            </div>
 
             {selectedDemoRequest.hardwareInfo && (
               <div className="hardware-detail-card">

@@ -10,7 +10,7 @@ import {
   type DocumentReference,
   type Firestore,
 } from 'firebase-admin/firestore';
-import type { AppVersion, UserRole, UserType } from './src/types';
+import type { AppVersion, DemoSystemInfo, UserRole, UserType } from './src/types';
 
 const app = express();
 const port = Number(process.env.PORT || process.env.ADMIN_API_PORT || 3002);
@@ -223,17 +223,31 @@ app.post('/api/registration/demo-activation', async (req, res, next) => {
       const currentExpiry = licenseData?.expiresAt instanceof Timestamp
         ? licenseData.expiresAt.toMillis()
         : 0;
-      if (requestType === 'demo' && licenseSnapshot.exists && licenseData?.revoked !== true) {
+      const isReissuedKeyForCurrentLicense =
+        requestType === 'demo' &&
+        licenseSnapshot.exists &&
+        licenseData?.revoked !== true &&
+        licenseData?.requestId === requestId &&
+        requestData?.keyUsed !== true;
+      if (
+        requestType === 'demo' &&
+        licenseSnapshot.exists &&
+        licenseData?.revoked !== true &&
+        !isReissuedKeyForCurrentLicense
+      ) {
         throw new PortalRequestError(409, 'This system already used its demo. Request an extension.');
       }
       if (requestType === 'extension' && (!licenseSnapshot.exists || currentExpiry > now)) {
         throw new PortalRequestError(409, 'The extension key can only be used after the current demo expires.');
       }
 
+      const activationExpiry = isReissuedKeyForCurrentLicense && licenseData?.expiresAt instanceof Timestamp
+        ? new Date(Math.max(licenseData.expiresAt.toMillis(), newExpiresAt.getTime()))
+        : newExpiresAt;
       transaction.update(requestRef, {
         keyUsed: true,
         redeemedAt: FieldValue.serverTimestamp(),
-        expiresAt: Timestamp.fromDate(newExpiresAt),
+        expiresAt: Timestamp.fromDate(activationExpiry),
       });
       transaction.update(claimRef, {
         used: true,
@@ -243,10 +257,12 @@ app.post('/api/registration/demo-activation', async (req, res, next) => {
         systemCode,
         requestId,
         activatedAt: FieldValue.serverTimestamp(),
-        expiresAt: Timestamp.fromDate(newExpiresAt),
+        expiresAt: Timestamp.fromDate(activationExpiry),
         revoked: false,
-      });
-      return newExpiresAt.toISOString();
+        revokedAt: FieldValue.delete(),
+        revokedBy: FieldValue.delete(),
+      }, { merge: true });
+      return activationExpiry.toISOString();
     });
 
     res.json({ expiresAt: activationExpiresAt });
@@ -274,19 +290,37 @@ app.post('/api/registration/demo-status-check', async (req, res, next) => {
     }
 
     const data = snap.data();
-    if (req.body?.eventType === 'login' && data?.revoked !== true) {
-      await licenseRef.set({ lastLoggedInAt: FieldValue.serverTimestamp() }, { merge: true });
-    }
-    if (data?.revoked === true) {
-      res.json({ active: false, expiresAt: null, revoked: true });
-      return;
-    }
-
+    const eventType = req.body?.eventType === 'login' ? 'login' : 'check';
+    const systemInfo = eventType === 'login'
+      ? parseDemoSystemInfo(req.body?.systemInfo)
+      : undefined;
+    const contentLength = Number(req.header('content-length'));
+    const networkBytesReceived = Number.isSafeInteger(contentLength) && contentLength >= 0
+      ? contentLength
+      : Buffer.byteLength(JSON.stringify(req.body ?? {}));
     const expiresAt = data?.expiresAt instanceof Timestamp
       ? data.expiresAt.toDate().toISOString()
       : null;
-    const isStillActive = expiresAt ? Date.parse(expiresAt) > Date.now() : false;
-    res.json({ active: isStillActive, expiresAt });
+    const responsePayload = data?.revoked === true
+      ? { active: false, expiresAt: null, revoked: true }
+      : { active: Boolean(expiresAt && Date.parse(expiresAt) > Date.now()), expiresAt };
+    const networkBytesSent = Buffer.byteLength(JSON.stringify(responsePayload));
+
+    try {
+      await storeDemoStatusActivity(
+        db,
+        licenseRef,
+        systemCode,
+        eventType,
+        networkBytesReceived,
+        networkBytesSent,
+        systemInfo
+      );
+    } catch (error) {
+      console.error('Failed to store demo-system activity in Firestore:', error);
+    }
+
+    res.json(responsePayload);
   } catch (error) {
     next(error);
   }
@@ -356,6 +390,70 @@ function toIsoDate(value: unknown): string | null {
   return value instanceof Timestamp ? value.toDate().toISOString() : null;
 }
 
+function numberOrZero(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function parseDemoSystemInfo(value: unknown): DemoSystemInfo | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const data = value as Record<string, unknown>;
+  const info: DemoSystemInfo = {
+    ...(typeof data.hostname === 'string' ? { hostname: data.hostname.trim().slice(0, 255) } : {}),
+    ...(typeof data.osPlatform === 'string' ? { osPlatform: data.osPlatform.trim().slice(0, 80) } : {}),
+    ...(typeof data.osRelease === 'string' ? { osRelease: data.osRelease.trim().slice(0, 80) } : {}),
+    ...(typeof data.architecture === 'string' ? { architecture: data.architecture.trim().slice(0, 40) } : {}),
+    ...(typeof data.cpuModel === 'string' ? { cpuModel: data.cpuModel.trim().slice(0, 160) } : {}),
+    ...(typeof data.cpuCores === 'number' && Number.isInteger(data.cpuCores) && data.cpuCores >= 1 && data.cpuCores <= 512
+      ? { cpuCores: data.cpuCores }
+      : {}),
+    ...(typeof data.totalMemoryGb === 'number' && Number.isFinite(data.totalMemoryGb) && data.totalMemoryGb >= 0 && data.totalMemoryGb <= 4096
+      ? { totalMemoryGb: data.totalMemoryGb }
+      : {}),
+  };
+  return Object.keys(info).length ? info : undefined;
+}
+
+async function storeDemoStatusActivity(
+  db: Firestore,
+  licenseRef: DocumentReference,
+  systemCode: string,
+  eventType: 'login' | 'check',
+  networkBytesReceived: number,
+  networkBytesSent: number,
+  systemInfo?: DemoSystemInfo
+): Promise<void> {
+  const telemetryRef = db.collection('demoSystemTelemetry').doc(systemCodeId(systemCode));
+  const loginTime = FieldValue.serverTimestamp();
+  const batch = db.batch();
+  batch.set(telemetryRef, {
+    systemCode,
+    totalStatusChecks: FieldValue.increment(1),
+    networkBytesReceived: FieldValue.increment(networkBytesReceived),
+    networkBytesSent: FieldValue.increment(networkBytesSent),
+    lastStatusCheckAt: loginTime,
+    updatedAt: loginTime,
+    ...(eventType === 'login'
+      ? {
+          totalLogins: FieldValue.increment(1),
+          lastLoggedInAt: loginTime,
+          ...(systemInfo ? { systemInfo } : {}),
+        }
+      : {}),
+  }, { merge: true });
+
+  if (eventType === 'login') {
+    batch.set(licenseRef, { lastLoggedInAt: loginTime }, { merge: true });
+    batch.set(telemetryRef.collection('logins').doc(), {
+      systemCode,
+      loggedInAt: loginTime,
+      networkBytesReceived,
+      networkBytesSent,
+      ...(systemInfo ? { systemInfo } : {}),
+    });
+  }
+  await batch.commit();
+}
+
 function parseUserType(value: unknown): UserType | null {
   return value === 'current' || value === 'demo' ? value : null;
 }
@@ -394,7 +492,8 @@ function createDemoKey(): string {
 function mapDemoRequest(
   id: string,
   data: Record<string, unknown>,
-  licenseData?: Record<string, unknown>
+  licenseData?: Record<string, unknown>,
+  telemetryData?: Record<string, unknown>
 ) {
   const licenseExpiresAt = licenseData?.revoked === true
     ? null
@@ -413,7 +512,12 @@ function mapDemoRequest(
     reviewedBy: typeof data.reviewedBy === 'string' ? data.reviewedBy : undefined,
     redeemedAt: toIsoDate(data.redeemedAt),
     expiresAt: licenseExpiresAt || toIsoDate(data.expiresAt),
-    lastLoggedInAt: toIsoDate(licenseData?.lastLoggedInAt),
+    lastLoggedInAt: toIsoDate(telemetryData?.lastLoggedInAt) || toIsoDate(licenseData?.lastLoggedInAt),
+    totalLogins: numberOrZero(telemetryData?.totalLogins),
+    totalStatusChecks: numberOrZero(telemetryData?.totalStatusChecks),
+    networkBytesReceived: numberOrZero(telemetryData?.networkBytesReceived),
+    networkBytesSent: numberOrZero(telemetryData?.networkBytesSent),
+    systemInfo: parseDemoSystemInfo(telemetryData?.systemInfo),
     keyUsed: data.keyUsed === true,
     hardwareInfo: typeof data.hardwareInfo === 'object' && data.hardwareInfo !== null ? data.hardwareInfo : undefined,
   };
@@ -754,15 +858,71 @@ app.get('/api/admin/demo-requests', async (_req, res, next) => {
       const license = await db.collection('demoLicenses').doc(systemCodeId(systemCode)).get();
       return [systemCode, license.data()] as const;
     }));
+    const telemetryEntries = await Promise.all(systemCodes.map(async (systemCode) => {
+      const telemetry = await db.collection('demoSystemTelemetry').doc(systemCodeId(systemCode)).get();
+      return [systemCode, telemetry.data()] as const;
+    }));
     const licensesBySystemCode = new Map(licenseEntries);
+    const telemetryBySystemCode = new Map(telemetryEntries);
     const requests = snapshot.docs
       .map((document) => {
         const data = document.data();
         const systemCode = String(data.systemCode || '').trim().toUpperCase();
-        return mapDemoRequest(document.id, data, licensesBySystemCode.get(systemCode));
+        return mapDemoRequest(
+          document.id,
+          data,
+          licensesBySystemCode.get(systemCode),
+          telemetryBySystemCode.get(systemCode)
+        );
       })
       .sort((left, right) => (right.requestedAt || '').localeCompare(left.requestedAt || ''));
     res.json(requests);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/admin/demo-requests/:id/activity', async (req, res, next) => {
+  try {
+    const { db } = getServices();
+    const requestSnapshot = await db.collection('demoRequests').doc(req.params.id).get();
+    if (!requestSnapshot.exists) {
+      throw new PortalRequestError(404, 'Demo request not found.');
+    }
+
+    const systemCode = String(requestSnapshot.data()?.systemCode || '').trim().toUpperCase();
+    if (!isSystemCode(systemCode)) {
+      throw new PortalRequestError(400, 'The demo request does not have a valid system code.');
+    }
+
+    const telemetryRef = db.collection('demoSystemTelemetry').doc(systemCodeId(systemCode));
+    const licenseRef = db.collection('demoLicenses').doc(systemCodeId(systemCode));
+    const [telemetrySnapshot, licenseSnapshot, loginsSnapshot] = await Promise.all([
+      telemetryRef.get(),
+      licenseRef.get(),
+      telemetryRef.collection('logins').orderBy('loggedInAt', 'desc').limit(50).get(),
+    ]);
+    const telemetry = telemetrySnapshot.data();
+    const license = licenseSnapshot.data();
+    res.json({
+      systemCode,
+      lastLoggedInAt: toIsoDate(telemetry?.lastLoggedInAt) || toIsoDate(license?.lastLoggedInAt),
+      totalLogins: numberOrZero(telemetry?.totalLogins),
+      totalStatusChecks: numberOrZero(telemetry?.totalStatusChecks),
+      networkBytesReceived: numberOrZero(telemetry?.networkBytesReceived),
+      networkBytesSent: numberOrZero(telemetry?.networkBytesSent),
+      systemInfo: parseDemoSystemInfo(telemetry?.systemInfo),
+      recentLogins: loginsSnapshot.docs.map((document) => {
+        const data = document.data();
+        return {
+          id: document.id,
+          loggedInAt: toIsoDate(data.loggedInAt),
+          networkBytesReceived: numberOrZero(data.networkBytesReceived),
+          networkBytesSent: numberOrZero(data.networkBytesSent),
+          systemInfo: parseDemoSystemInfo(data.systemInfo),
+        };
+      }),
+    });
   } catch (error) {
     next(error);
   }
@@ -800,6 +960,12 @@ app.delete('/api/admin/demo-requests/:id/system-data', async (req, res, next) =>
     for (const document of claimsSnapshot.docs) {
       claimRefs.set(document.ref.path, document.ref);
     }
+
+    const telemetryRef = db.collection('demoSystemTelemetry').doc(systemCodeId(systemCode));
+    const [telemetrySnapshot, loginEventsSnapshot] = await Promise.all([
+      telemetryRef.get(),
+      telemetryRef.collection('logins').get(),
+    ]);
 
     const requestIds = [...new Set([
       ...requestsSnapshot.docs.map((document) => document.id),
@@ -847,6 +1013,8 @@ app.delete('/api/admin/demo-requests/:id/system-data', async (req, res, next) =>
     const deleteGroups = [
       [...licenseRefs.values()],
       [...claimRefs.values()],
+      loginEventsSnapshot.docs.map((document) => document.ref),
+      ...(telemetrySnapshot.exists ? [[telemetryRef]] : []),
       [...requestRefs.values()],
     ];
     for (const refs of deleteGroups) {
@@ -863,6 +1031,8 @@ app.delete('/api/admin/demo-requests/:id/system-data', async (req, res, next) =>
       deletedRequestIds: [...requestRefs.values()].map((reference) => reference.id),
       deletedKeyClaims: claimRefs.size,
       deletedLicenses: licenseRefs.size,
+      deletedLoginEvents: loginEventsSnapshot.size,
+      deletedTelemetryRecords: telemetrySnapshot.exists ? 1 : 0,
       authAccountsDeleted: 0,
     });
   } catch (error) {

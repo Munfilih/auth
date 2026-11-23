@@ -44,6 +44,35 @@ export interface HardwareInfo {
   biosSerial?: string;
 }
 
+export interface DemoSystemInfo {
+  hostname?: string;
+  osPlatform?: string;
+  osRelease?: string;
+  architecture?: string;
+  cpuModel?: string;
+  cpuCores?: number;
+  totalMemoryGb?: number;
+}
+
+export interface DemoLoginEvent {
+  id: string;
+  loggedInAt: string | null;
+  networkBytesReceived: number;
+  networkBytesSent: number;
+  systemInfo?: DemoSystemInfo;
+}
+
+export interface DemoSystemActivity {
+  systemCode: string;
+  lastLoggedInAt: string | null;
+  totalLogins: number;
+  totalStatusChecks: number;
+  networkBytesReceived: number;
+  networkBytesSent: number;
+  systemInfo?: DemoSystemInfo;
+  recentLogins: DemoLoginEvent[];
+}
+
 export interface DemoRequest {
   id: string;
   requestType: DemoRequestType;
@@ -57,6 +86,11 @@ export interface DemoRequest {
   redeemedAt: string | null;
   expiresAt: string | null;
   lastLoggedInAt: string | null;
+  totalLogins: number;
+  totalStatusChecks: number;
+  networkBytesReceived: number;
+  networkBytesSent: number;
+  systemInfo?: DemoSystemInfo;
   keyUsed: boolean;
   hardwareInfo?: HardwareInfo;
 }

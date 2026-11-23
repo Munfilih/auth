@@ -248,28 +248,6 @@ code { color: var(--accent-strong); font-size: .9em; font-family: ui-monospace, 
 .page-title-row h1 { margin: 4px 0 3px; color: var(--ink); font-size: 26px; font-weight: 700; letter-spacing: -.6px; }
 .page-title-row .muted-copy { margin: 0; font-size: 13px; }
 
-/* ── Stats ── */
-.stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
-.stat-card {
-  position: relative; display: grid; min-height: 120px;
-  grid-template-columns: 36px 1fr; align-content: center;
-  column-gap: 11px; padding: 16px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--panel);
-  box-shadow: 0 1px 3px rgba(15,23,42,.05), 0 10px 30px rgba(15,23,42,.05);
-  overflow: hidden;
-}
-.stat-card::after { content: ''; position: absolute; inset: 0 0 auto; height: 3px; background: linear-gradient(90deg, transparent, rgba(99,102,241,.45), transparent); }
-.stat-icon { display: grid; width: 34px; height: 34px; grid-row: span 3; place-items: center; border-radius: 10px; }
-.stat-blue { color: var(--accent-strong); background: var(--accent-soft); }
-.stat-violet { color: #9333ea; background: #faf5ff; }
-.stat-amber { color: var(--amber); background: #fffbeb; }
-.stat-green { color: var(--green); background: #f0fdf4; }
-.stat-label { align-self: center; color: var(--muted); font-size: 11px; font-weight: 600; }
-.stat-card strong { margin-top: 4px; color: var(--ink); font-size: 22px; font-weight: 700; letter-spacing: -.5px; }
-.stat-card small { margin-top: 2px; color: #94a3b8; font-size: 10px; }
-
 /* ── Flash ── */
 .flash-message { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; padding: 10px 13px; border: 1px solid; border-radius: 10px; font-size: 13px; }
 .flash-success { color: #047857; border-color: #bbf7d0; background: #f0fdf4; }
@@ -501,7 +479,12 @@ tbody tr:hover { background: #f8faff; }
 .hardware-detail-card dd { margin: 0; color: var(--ink2); font-size: 12px; }
 .hardware-detail-card { margin-top: 12px; }
 .hardware-detail-card h3 { margin: 0 0 8px; color: var(--ink); font-size: 13px; }
+.hardware-detail-card .demo-system-info-heading { margin-top: 14px; }
 .hardware-detail-card dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.demo-login-history { display: grid; gap: 7px; }
+.demo-login-history > div { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: #f8fafc; }
+.demo-login-history strong { color: var(--ink2); font-size: 11px; }
+.demo-login-history small { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
 .generated-key-card {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -568,7 +551,6 @@ tbody tr:hover { background: #f8faff; }
 
 /* ── Responsive ── */
 @media (max-width: 1050px) {
-  .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .page-content { padding-inline: 22px; }
   .topbar { padding-inline: 22px; }
 }
@@ -601,10 +583,6 @@ tbody tr:hover { background: #f8faff; }
   .page-title-row { flex-direction: column; align-items: stretch; gap: 10px; margin-bottom: 16px; }
   .page-title-row h1 { font-size: 24px; margin: 0 0 4px; }
   .page-title-row > .button { width: 100%; min-height: 42px; border-radius: 12px; }
-  .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
-  .stat-card { min-height: 96px; grid-template-columns: 30px 1fr; column-gap: 9px; padding: 12px; border-radius: 16px; }
-  .stat-icon { width: 28px; height: 28px; border-radius: 8px; }
-  .stat-card strong { font-size: 20px; }
   .table-card { border-radius: 16px; }
   .table-toolbar { flex-direction: column; align-items: stretch; gap: 10px; padding: 14px; }
   .search-box { width: 100%; height: 40px; border-radius: 10px; }
