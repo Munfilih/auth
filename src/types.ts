@@ -49,6 +49,7 @@ export interface DemoRequest {
   requestType: DemoRequestType;
   systemCode: string;
   requestedBy: string;
+  demoKey?: string;
   status: DemoRequestStatus;
   requestedAt: string | null;
   reviewedAt: string | null;

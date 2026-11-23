@@ -93,6 +93,22 @@ export async function getDemoRequests(user: User): Promise<DemoRequest[]> {
   return request('/api/admin/demo-requests', user);
 }
 
+export async function deleteDemoSystemData(
+  user: User,
+  requestId: string
+): Promise<{
+  systemCode: string;
+  deletedRequests: number;
+  deletedRequestIds: string[];
+  deletedKeyClaims: number;
+  deletedLicenses: number;
+  authAccountsDeleted: number;
+}> {
+  return request(`/api/admin/demo-requests/${encodeURIComponent(requestId)}/system-data`, user, {
+    method: 'DELETE',
+  });
+}
+
 export async function reviewDemoRequest(
   user: User,
   id: string,

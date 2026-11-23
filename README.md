@@ -38,7 +38,9 @@ The GitHub Actions workflow builds the Vite app (including the `/auth/` project-
 
 ## aptPOS demo requests
 
-The **Demo Key Requests** tab receives initial two-day demo requests and expired-demo extension requests from aptPOS. Approving a request generates a one-time, system-code-bound key. Copy and share that key with the requester; it is not stored in readable form and is shown only in the approval response. The two-day period starts when the requester redeems the key. Extensions also grant two days from redemption.
+The **Demo Key Requests** tab receives initial two-day demo requests and expired-demo extension requests from aptPOS. Requests appear in a list; select one to open its details. Approving a request generates a one-time, system-code-bound key. Copy and share that key with the requester; it is not stored in readable form and is shown only in the approval response. The two-day period starts when the requester redeems the key. Extensions also grant two days from redemption.
+
+The details view can permanently delete all `demoRequests`, `demoKeyClaims`, and `demoLicenses` records for that request's system code. The action requires typing the full system code and preserves Firebase Authentication and `appUsers` accounts.
 
 The POS server forwards requests to this API using `DEMO_PORTAL_API_URL` (defaults to `http://127.0.0.1:3002` for both apps running on one computer). Set it to the deployed API's HTTPS base URL in each POS server environment when the apps run on different machines. GitHub stores this source code but does not run the Node API; deploy the API to a Node-capable host and keep Firebase Admin credentials in that host's secret environment, never in the browser or POS app.
 

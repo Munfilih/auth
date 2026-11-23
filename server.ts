@@ -3,7 +3,13 @@ import { createHash, randomBytes } from 'node:crypto';
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 import { applicationDefault, cert, getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth, type Auth, type DecodedIdToken } from 'firebase-admin/auth';
-import { FieldValue, Timestamp, getFirestore, type Firestore } from 'firebase-admin/firestore';
+import {
+  FieldValue,
+  Timestamp,
+  getFirestore,
+  type DocumentReference,
+  type Firestore,
+} from 'firebase-admin/firestore';
 import type { AppVersion, UserRole, UserType } from './src/types';
 
 const app = express();
@@ -91,7 +97,7 @@ app.post('/api/registration/demo-requests', async (req, res, next) => {
     const expiration = licenseData?.expiresAt instanceof Timestamp
       ? licenseData.expiresAt.toMillis()
       : 0;
-    if (requestType === 'demo' && licenseSnapshot.exists) {
+    if (requestType === 'demo' && licenseSnapshot.exists && licenseData?.revoked !== true) {
       throw new PortalRequestError(409, 'This system already had demo access. Request an extension instead.');
     }
     if (requestType === 'extension' && (!licenseSnapshot.exists || expiration > Date.now())) {
@@ -217,7 +223,7 @@ app.post('/api/registration/demo-activation', async (req, res, next) => {
       const currentExpiry = licenseData?.expiresAt instanceof Timestamp
         ? licenseData.expiresAt.toMillis()
         : 0;
-      if (requestType === 'demo' && licenseSnapshot.exists) {
+      if (requestType === 'demo' && licenseSnapshot.exists && licenseData?.revoked !== true) {
         throw new PortalRequestError(409, 'This system already used its demo. Request an extension.');
       }
       if (requestType === 'extension' && (!licenseSnapshot.exists || currentExpiry > now)) {
@@ -238,6 +244,7 @@ app.post('/api/registration/demo-activation', async (req, res, next) => {
         requestId,
         activatedAt: FieldValue.serverTimestamp(),
         expiresAt: Timestamp.fromDate(newExpiresAt),
+        revoked: false,
       });
       return newExpiresAt.toISOString();
     });
@@ -387,6 +394,7 @@ function mapDemoRequest(id: string, data: Record<string, unknown>) {
     requestType: data.requestType === 'extension' ? 'extension' as const : 'demo' as const,
     systemCode: String(data.systemCode || ''),
     requestedBy: String(data.requestedBy || ''),
+    demoKey: typeof data.demoKey === 'string' ? data.demoKey : undefined,
     status: data.status === 'approved' || data.status === 'rejected'
       ? data.status
       : 'pending' as const,
@@ -737,6 +745,108 @@ app.get('/api/admin/demo-requests', async (_req, res, next) => {
   }
 });
 
+app.delete('/api/admin/demo-requests/:id/system-data', async (req, res, next) => {
+  try {
+    const { db } = getServices();
+    const selectedRequest = await db.collection('demoRequests').doc(req.params.id).get();
+    if (!selectedRequest.exists) {
+      throw new PortalRequestError(404, 'Demo request not found.');
+    }
+
+    const selectedData = selectedRequest.data();
+    const systemCode = typeof selectedData?.systemCode === 'string'
+      ? selectedData.systemCode.trim().toUpperCase()
+      : '';
+    if (!isSystemCode(systemCode)) {
+      throw new PortalRequestError(400, 'The demo request does not have a valid system code.');
+    }
+
+    const requestsSnapshot = await db.collection('demoRequests')
+      .where('systemCode', '==', systemCode)
+      .get();
+    const requestRefs = new Map<string, DocumentReference>();
+    for (const document of requestsSnapshot.docs) {
+      requestRefs.set(document.ref.path, document.ref);
+    }
+    requestRefs.set(selectedRequest.ref.path, selectedRequest.ref);
+
+    const claimsSnapshot = await db.collection('demoKeyClaims')
+      .where('systemCode', '==', systemCode)
+      .get();
+    const claimRefs = new Map<string, DocumentReference>();
+    for (const document of claimsSnapshot.docs) {
+      claimRefs.set(document.ref.path, document.ref);
+    }
+
+    const requestIds = [...new Set([
+      ...requestsSnapshot.docs.map((document) => document.id),
+      selectedRequest.id,
+    ])];
+    for (let offset = 0; offset < requestIds.length; offset += 30) {
+      const requestIdBatch = requestIds.slice(offset, offset + 30);
+      const relatedClaims = await db.collection('demoKeyClaims')
+        .where('requestId', 'in', requestIdBatch)
+        .get();
+      for (const document of relatedClaims.docs) {
+        claimRefs.set(document.ref.path, document.ref);
+      }
+    }
+
+    const requestKeyHashes = new Set<string>();
+    for (const document of requestsSnapshot.docs) {
+      const keyHash = document.data().demoKeyHash;
+      if (typeof keyHash === 'string' && keyHash) requestKeyHashes.add(keyHash);
+    }
+    if (typeof selectedData?.demoKeyHash === 'string' && selectedData.demoKeyHash) {
+      requestKeyHashes.add(selectedData.demoKeyHash);
+    }
+    const claimsByHash = await Promise.all(
+      [...requestKeyHashes].map((keyHash) =>
+        db.collection('demoKeyClaims').doc(keyHash).get()
+      )
+    );
+    for (const document of claimsByHash) {
+      if (document.exists) claimRefs.set(document.ref.path, document.ref);
+    }
+
+    const licensesSnapshot = await db.collection('demoLicenses')
+      .where('systemCode', '==', systemCode)
+      .get();
+    const licenseRefs = new Map<string, DocumentReference>();
+    for (const document of licensesSnapshot.docs) {
+      licenseRefs.set(document.ref.path, document.ref);
+    }
+    const primaryLicense = db.collection('demoLicenses').doc(systemCodeId(systemCode));
+    if ((await primaryLicense.get()).exists) {
+      licenseRefs.set(primaryLicense.path, primaryLicense);
+    }
+
+    const deleteGroups = [
+      [...licenseRefs.values()],
+      [...claimRefs.values()],
+      [...requestRefs.values()],
+    ];
+    for (const refs of deleteGroups) {
+      for (let offset = 0; offset < refs.length; offset += 450) {
+        const batch = db.batch();
+        refs.slice(offset, offset + 450).forEach((reference) => batch.delete(reference));
+        await batch.commit();
+      }
+    }
+
+    res.json({
+      systemCode,
+      deletedRequests: requestRefs.size,
+      deletedRequestIds: [...requestRefs.values()].map((reference) => reference.id),
+      deletedKeyClaims: claimRefs.size,
+      deletedLicenses: licenseRefs.size,
+      authAccountsDeleted: 0,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.patch('/api/admin/demo-requests/:id', async (req, res, next) => {
   try {
     const status = req.body?.status;
@@ -775,7 +885,7 @@ app.patch('/api/admin/demo-requests/:id', async (req, res, next) => {
         status,
         reviewedAt: FieldValue.serverTimestamp(),
         reviewedBy: adminUid,
-        ...(status === 'approved' ? { demoKeyHash: keyHash, keyUsed: false } : {}),
+        ...(status === 'approved' ? { demoKey, demoKeyHash: keyHash, keyUsed: false } : {}),
       });
       if (status === 'approved' && keyHash) {
         transaction.set(db.collection('demoKeyClaims').doc(keyHash), {
@@ -810,11 +920,23 @@ app.post('/api/admin/demo-requests/:id/key', async (req, res, next) => {
         throw new PortalRequestError(404, 'Demo request not found.');
       }
       const requestData = requestSnapshot.data();
-      if (requestData?.status !== 'approved' || requestData.keyUsed === true) {
-        throw new PortalRequestError(409, 'A replacement key is only available for an approved, unused demo request.');
+      if (requestData?.status !== 'approved') {
+        throw new PortalRequestError(409, 'A replacement key is only available for an approved demo request.');
       }
 
-      transaction.update(requestRef, { demoKeyHash: keyHash });
+      const previousKeyHash = typeof requestData.demoKeyHash === 'string'
+        ? requestData.demoKeyHash
+        : '';
+      transaction.update(requestRef, {
+        demoKey,
+        demoKeyHash: keyHash,
+        keyUsed: false,
+        redeemedAt: null,
+        expiresAt: null,
+      });
+      if (previousKeyHash) {
+        transaction.delete(db.collection('demoKeyClaims').doc(previousKeyHash));
+      }
       transaction.set(db.collection('demoKeyClaims').doc(keyHash), {
         requestId: requestRef.id,
         systemCode: requestData.systemCode,
@@ -850,10 +972,19 @@ app.post('/api/admin/demo-requests/:id/deactivate', async (req, res, next) => {
         revokedBy: String(res.locals.adminUid || ''),
       }, { merge: true });
 
+      const keyHash = typeof data?.demoKeyHash === 'string'
+        ? data.demoKeyHash
+        : '';
       transaction.update(requestRef, {
         status: 'rejected',
         deactivatedAt: FieldValue.serverTimestamp(),
+        demoKey: FieldValue.delete(),
+        demoKeyHash: FieldValue.delete(),
+        expiresAt: null,
       });
+      if (keyHash) {
+        transaction.delete(db.collection('demoKeyClaims').doc(keyHash));
+      }
     });
 
     const updated = (await requestRef.get()).data();

@@ -4,6 +4,7 @@ import {
   ArrowUpRight,
   BadgeCheck,
   Check,
+  ChevronRight,
   CircleAlert,
   Clock3,
   FileClock,
@@ -25,6 +26,7 @@ import {
   createActivationRequest,
   createUser,
   deactivateDemoRequest,
+  deleteDemoSystemData,
   deleteUser,
   extendDemoRequest,
   getActivationRequests,
@@ -309,6 +311,12 @@ export default function AdminPortal() {
   const [pageError, setPageError] = useState('');
   const [flash, setFlash] = useState<FlashMessage>(null);
   const [search, setSearch] = useState('');
+  const [demoSearch, setDemoSearch] = useState('');
+  const [demoStatusFilter, setDemoStatusFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
+  const [selectedDemoRequestId, setSelectedDemoRequestId] = useState<string | null>(null);
+  const [deleteDemoDataRequest, setDeleteDemoDataRequest] = useState<DemoRequest | null>(null);
+  const [deleteConfirmationCode, setDeleteConfirmationCode] = useState('');
+  const [regenerateKeyRequest, setRegenerateKeyRequest] = useState<DemoRequest | null>(null);
   const [userEditor, setUserEditor] = useState<{ user: AppUser | null; type: UserType } | null>(null);
   const [requestEditorOpen, setRequestEditorOpen] = useState(false);
 
@@ -575,13 +583,12 @@ export default function AdminPortal() {
   };
 
   const handleRegenerateDemoKey = async (request: DemoRequest) => {
-    if (!authUser || !window.confirm('Generate a replacement key? Any previously shared key for this request will stop working.')) {
-      return;
-    }
+    if (!authUser) return;
     setActionBusy(true);
     try {
       const { demoKey } = await regenerateDemoRequestKey(authUser, request.id);
       setIssuedDemoKeys((keys) => ({ ...keys, [request.id]: demoKey }));
+      setRegenerateKeyRequest(null);
       notify('success', 'Replacement demo key generated. Copy and share it with the requester.');
     } catch (error) {
       notify('error', messageFrom(error));
@@ -599,6 +606,37 @@ export default function AdminPortal() {
       await deactivateDemoRequest(authUser, request.id);
       await loadData(authUser);
       notify('success', `Demo deactivated for system ${request.systemCode}.`);
+    } catch (error) {
+      notify('error', messageFrom(error));
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const closeDeleteDemoConfirmation = () => {
+    if (deleteDemoDataRequest) setSelectedDemoRequestId(deleteDemoDataRequest.id);
+    setDeleteDemoDataRequest(null);
+    setDeleteConfirmationCode('');
+  };
+
+  const handleDeleteDemoData = async () => {
+    if (!authUser || !deleteDemoDataRequest) return;
+    setActionBusy(true);
+    try {
+      const result = await deleteDemoSystemData(authUser, deleteDemoDataRequest.id);
+      setIssuedDemoKeys((keys) => {
+        const remainingKeys = { ...keys };
+        result.deletedRequestIds.forEach((requestId) => delete remainingKeys[requestId]);
+        return remainingKeys;
+      });
+      setSelectedDemoRequestId(null);
+      setDeleteDemoDataRequest(null);
+      setDeleteConfirmationCode('');
+      await loadData(authUser);
+      notify(
+        'success',
+        `Deleted ${result.deletedRequests} request(s), ${result.deletedKeyClaims} key claim(s), and ${result.deletedLicenses} license(s) for ${result.systemCode}. Firebase Auth accounts were preserved.`
+      );
     } catch (error) {
       notify('error', messageFrom(error));
     } finally {
@@ -643,6 +681,31 @@ export default function AdminPortal() {
   });
   const pendingRequests = requests.filter((request) => request.status === 'pending').length;
   const pendingDemoRequests = demoRequests.filter((request) => request.status === 'pending').length;
+  const selectedDemoRequest = demoRequests.find((request) => request.id === selectedDemoRequestId) || null;
+  const visibleDemoRequests = useMemo(() => {
+    const query = demoSearch.trim().toLowerCase();
+    return demoRequests
+      .filter((request) => demoStatusFilter === 'all' || request.status === demoStatusFilter)
+      .filter((request) => {
+        if (!query) return true;
+        const hardware = request.hardwareInfo;
+        return [
+          request.systemCode,
+          request.requestedBy,
+          request.requestType,
+          hardware?.deviceModel,
+          hardware?.deviceManufacturer,
+          hardware?.osCaption,
+          hardware?.biosSerial,
+        ].some((value) => value?.toLowerCase().includes(query));
+      })
+      .sort((a, b) => {
+        const statusRank = { pending: 0, approved: 1, rejected: 2 };
+        const statusDifference = statusRank[a.status] - statusRank[b.status];
+        if (statusDifference !== 0) return statusDifference;
+        return (new Date(b.requestedAt || 0).getTime()) - (new Date(a.requestedAt || 0).getTime());
+      });
+  }, [demoRequests, demoSearch, demoStatusFilter]);
 
   if (!firebaseConfigured) {
     return (
@@ -859,90 +922,67 @@ export default function AdminPortal() {
               )}
             </section>
           ) : tab === 'demo-requests' ? (
-            <section className="table-card">
-              <div className="table-toolbar">
-                <div><h2>Demo key request queue</h2><p>{demoRequests.length} total requests</p></div>
-                <div className="request-toolbar-note"><Clock3 size={15} /> Each approved key starts a two-day demo when redeemed.</div>
+            <section className="demo-request-panel">
+              <div className="demo-request-toolbar">
+                <div>
+                  <h2>Demo key request queue</h2>
+                  <p>{visibleDemoRequests.length} of {demoRequests.length} requests</p>
+                </div>
+                <div className="demo-request-controls">
+                  <label className="search-box"><Search size={16} /><input placeholder="Search system or device" value={demoSearch} onChange={(event) => setDemoSearch(event.target.value)} /></label>
+                  <select
+                    className="status-filter"
+                    value={demoStatusFilter}
+                    onChange={(event) => setDemoStatusFilter(event.target.value as typeof demoStatusFilter)}
+                    aria-label="Filter demo requests by status"
+                  >
+                    <option value="all">All statuses</option>
+                    <option value="pending">Pending</option>
+                    <option value="approved">Approved</option>
+                    <option value="rejected">Rejected</option>
+                  </select>
+                </div>
               </div>
               {loadingData ? (
                 <div className="table-state"><LoaderCircle className="spin" size={21} /> Loading requests…</div>
               ) : demoRequests.length === 0 ? (
                 <div className="empty-state"><KeyRound size={25} /><strong>No demo key requests yet</strong><span>Requests from aptPOS will appear here.</span></div>
+              ) : visibleDemoRequests.length === 0 ? (
+                <div className="empty-state"><Search size={25} /><strong>No matching requests</strong><span>Try another search or status filter.</span></div>
               ) : (
-                <div className="table-scroll">
-                  <table>
-                    <thead><tr><th>TYPE</th><th>REQUESTED BY</th><th>SYSTEM & DEVICE</th><th>REQUESTED</th><th>STATUS</th><th>DEMO ACCESS</th><th className="actions-heading">ACTIONS</th></tr></thead>
-                    <tbody>
-                      {demoRequests.map((request) => (
-                        <tr key={request.id}>
-                          <td data-label="Type"><StatusPill tone={request.requestType === 'extension' ? 'neutral' : 'blue'}>{request.requestType === 'extension' ? 'Demo extension' : 'Demo activation'}</StatusPill></td>
-                          <td data-label="Requested by">{request.requestedBy}</td>
-                          <td data-label="System & Device" className="date-cell">
-                            <div><strong><code>{request.systemCode}</code></strong></div>
-                            {request.hardwareInfo && (
-                              <div className="hardware-details" style={{ fontSize: '11px', color: '#64748b', marginTop: '2px', lineHeight: '1.3' }}>
-                                {request.hardwareInfo.deviceManufacturer || request.hardwareInfo.deviceModel ? (
-                                  <div>💻 {request.hardwareInfo.deviceManufacturer} {request.hardwareInfo.deviceModel}</div>
-                                ) : null}
-                                {request.hardwareInfo.osCaption ? (
-                                  <div>🪟 {request.hardwareInfo.osCaption}</div>
-                                ) : null}
-                                {request.hardwareInfo.cpuModel ? (
-                                  <div>⚡ {request.hardwareInfo.cpuModel} ({request.hardwareInfo.cpuCores} cores) · {request.hardwareInfo.totalMemoryGb} GB RAM</div>
-                                ) : null}
-                                {request.hardwareInfo.biosSerial ? (
-                                  <div>🏷️ S/N: {request.hardwareInfo.biosSerial}</div>
-                                ) : null}
-                              </div>
-                            )}
-                          </td>
-                          <td data-label="Requested" className="date-cell">{formatDate(request.requestedAt)}</td>
-                          <td data-label="Status"><StatusPill tone={request.status === 'approved' ? 'green' : request.status === 'rejected' ? 'red' : 'amber'}>{request.status}</StatusPill></td>
-                          <td data-label="Demo access" className="date-cell">
-                            {request.expiresAt
-                              ? `${request.keyUsed ? 'Redeemed' : 'Key not used'} · ${formatDate(request.expiresAt)}`
-                              : '—'}
-                          </td>
-                          <td data-label="Actions">
-                            {request.status === 'pending' ? (
-                              <div className="row-actions">
-                                <button className="button button-approve" onClick={() => void handleReviewDemoRequest(request, 'approved')} disabled={actionBusy}><Check size={15} /> Approve & generate key</button>
-                                <button className="icon-button icon-danger" title="Reject demo request" aria-label="Reject demo request" onClick={() => void handleReviewDemoRequest(request, 'rejected')} disabled={actionBusy}><X size={16} /></button>
-                              </div>
-                            ) : issuedDemoKeys[request.id] ? (
-                              <div className="row-actions">
-                                <input className="w-64 rounded border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-xs" readOnly value={issuedDemoKeys[request.id]} aria-label="Generated demo key" />
-                                <button className="button button-quiet" onClick={() => void handleCopyDemoKey(issuedDemoKeys[request.id])}><Check size={15} /> Copy key</button>
-                              </div>
-                            ) : (
-                              <div className="row-actions" style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                                {request.status === 'approved' && !request.keyUsed && (
-                                  <button className="button button-quiet" onClick={() => void handleRegenerateDemoKey(request)} disabled={actionBusy} title="Generate replacement key">
-                                    <KeyRound size={15} /> Replace key
-                                  </button>
-                                )}
-                                {request.status === 'approved' && (
-                                  <>
-                                    <button className="button button-quiet" style={{ color: '#16a34a' }} onClick={() => void handleExtendDemo(request)} disabled={actionBusy} title="Extend demo validity by days">
-                                      <Clock3 size={15} /> Extend
-                                    </button>
-                                    <button className="button button-quiet" style={{ color: '#dc2626' }} onClick={() => void handleDeactivateDemo(request)} disabled={actionBusy} title="Deactivate demo immediately">
-                                      <UserRoundX size={15} /> Deactivate
-                                    </button>
-                                  </>
-                                )}
-                                {request.status === 'rejected' && (
-                                  <button className="button button-quiet" style={{ color: '#16a34a' }} onClick={() => void handleExtendDemo(request)} disabled={actionBusy} title="Reactivate demo by extending days">
-                                    <Clock3 size={15} /> Reactivate
-                                  </button>
-                                )}
-                              </div>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="demo-request-list">
+                  {visibleDemoRequests.map((request) => {
+                    const hardware = request.hardwareInfo;
+                    return (
+                      <button
+                        type="button"
+                        className={`demo-request-row${selectedDemoRequestId === request.id ? ' demo-request-row-selected' : ''}`}
+                        key={request.id}
+                        onClick={() => setSelectedDemoRequestId(request.id)}
+                      >
+                        <span className="demo-request-icon"><KeyRound size={19} /></span>
+                        <span className="demo-request-main">
+                          <span className="demo-request-heading">
+                            <strong>{request.requestType === 'extension' ? 'Demo extension' : 'Demo activation'}</strong>
+                            <StatusPill tone={request.status === 'approved' ? 'green' : request.status === 'rejected' ? 'red' : 'amber'}>{request.status}</StatusPill>
+                          </span>
+                          <span className="demo-request-meta">
+                            <code>{request.systemCode}</code>
+                            <span>{request.requestedBy}</span>
+                            <span>{hardware?.deviceManufacturer || hardware?.deviceModel ? `${hardware.deviceManufacturer || ''} ${hardware.deviceModel || ''}`.trim() : 'Device details unavailable'}</span>
+                          </span>
+                        </span>
+                        <span className="demo-request-time">
+                          <span>{formatDate(request.requestedAt)}</span>
+                          {request.expiresAt && <small>{request.keyUsed ? 'Redeemed' : 'Key not used'} · expires {formatDate(request.expiresAt)}</small>}
+                          {request.status === 'approved' && request.demoKey && (
+                            <small className="demo-request-key">Using demo key: <code>{request.demoKey}</code></small>
+                          )}
+                        </span>
+                        <ChevronRight className="demo-request-chevron" size={18} />
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </section>
@@ -1004,6 +1044,203 @@ export default function AdminPortal() {
           onClose={() => setRequestEditorOpen(false)}
           onSubmit={handleCreateRequest}
         />
+      )}
+      {selectedDemoRequest && (
+        <div className="modal-backdrop" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !actionBusy) setSelectedDemoRequestId(null);
+        }}>
+          <section className="demo-detail-modal" role="dialog" aria-modal="true" aria-label="Demo key request details">
+            <div className="demo-detail-header">
+              <div>
+                <p className="eyebrow">DEMO KEY REQUEST</p>
+                <h2>{selectedDemoRequest.requestType === 'extension' ? 'Demo extension' : 'Demo activation'}</h2>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setSelectedDemoRequestId(null)} aria-label="Close details">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="demo-detail-summary">
+              <div>
+                <span>System code</span>
+                <strong><code>{selectedDemoRequest.systemCode}</code></strong>
+              </div>
+              <div>
+                <span>Status</span>
+                <StatusPill tone={selectedDemoRequest.status === 'approved' ? 'green' : selectedDemoRequest.status === 'rejected' ? 'red' : 'amber'}>
+                  {selectedDemoRequest.status}
+                </StatusPill>
+              </div>
+            </div>
+
+            <dl className="demo-detail-grid">
+              <div><dt>Requested by</dt><dd>{selectedDemoRequest.requestedBy}</dd></div>
+              <div><dt>Requested</dt><dd>{formatDate(selectedDemoRequest.requestedAt)}</dd></div>
+              <div><dt>Reviewed</dt><dd>{selectedDemoRequest.reviewedAt ? formatDate(selectedDemoRequest.reviewedAt) : 'Not reviewed'}</dd></div>
+              {selectedDemoRequest.expiresAt && <div><dt>Expiration</dt><dd>{formatDate(selectedDemoRequest.expiresAt)}</dd></div>}
+            </dl>
+
+            {selectedDemoRequest.hardwareInfo && (
+              <div className="hardware-detail-card">
+                <h3>Hardware information</h3>
+                <dl>
+                  {selectedDemoRequest.hardwareInfo.deviceManufacturer || selectedDemoRequest.hardwareInfo.deviceModel ? (
+                    <div><dt>Device</dt><dd>{[selectedDemoRequest.hardwareInfo.deviceManufacturer, selectedDemoRequest.hardwareInfo.deviceModel].filter(Boolean).join(' ')}</dd></div>
+                  ) : null}
+                  {selectedDemoRequest.hardwareInfo.osCaption && <div><dt>Operating system</dt><dd>{selectedDemoRequest.hardwareInfo.osCaption}</dd></div>}
+                  {selectedDemoRequest.hardwareInfo.cpuModel && <div><dt>Processor</dt><dd>{selectedDemoRequest.hardwareInfo.cpuModel} ({selectedDemoRequest.hardwareInfo.cpuCores || 'Unknown'} cores)</dd></div>}
+                  {selectedDemoRequest.hardwareInfo.totalMemoryGb && <div><dt>Memory</dt><dd>{selectedDemoRequest.hardwareInfo.totalMemoryGb} GB RAM</dd></div>}
+                  {selectedDemoRequest.hardwareInfo.biosSerial && <div><dt>BIOS serial</dt><dd>{selectedDemoRequest.hardwareInfo.biosSerial}</dd></div>}
+                  {selectedDemoRequest.hardwareInfo.hostname && <div><dt>Hostname</dt><dd>{selectedDemoRequest.hardwareInfo.hostname}</dd></div>}
+                </dl>
+              </div>
+            )}
+
+            {(issuedDemoKeys[selectedDemoRequest.id] || selectedDemoRequest.demoKey) && (
+              <div className="generated-key-card">
+                <div>
+                  <span>{selectedDemoRequest.keyUsed ? 'Current using demo key' : 'Generated demo key'}</span>
+                  <input readOnly value={issuedDemoKeys[selectedDemoRequest.id] || selectedDemoRequest.demoKey || ''} />
+                </div>
+                <button className="button button-primary" onClick={() => void handleCopyDemoKey(issuedDemoKeys[selectedDemoRequest.id] || selectedDemoRequest.demoKey || '')}>
+                  <Check size={15} /> Copy key
+                </button>
+              </div>
+            )}
+            {!issuedDemoKeys[selectedDemoRequest.id] && !selectedDemoRequest.demoKey && selectedDemoRequest.keyUsed && (
+              <div className="generated-key-card">
+                <div>
+                  <span>Current using demo key</span>
+                  <input readOnly value="Key was issued before readable key storage was enabled" />
+                </div>
+              </div>
+            )}
+
+            <div className="demo-detail-actions">
+              {selectedDemoRequest.status === 'pending' ? (
+                <>
+                  <button className="button button-quiet" onClick={() => void handleReviewDemoRequest(selectedDemoRequest, 'rejected')} disabled={actionBusy}>
+                    <X size={15} /> Reject
+                  </button>
+                  <button className="button button-primary" onClick={() => void handleReviewDemoRequest(selectedDemoRequest, 'approved')} disabled={actionBusy}>
+                    <Check size={15} /> Approve & generate key
+                  </button>
+                </>
+              ) : (
+                <>
+                  {selectedDemoRequest.status === 'approved' && (
+                    <button className="button button-quiet" onClick={() => setRegenerateKeyRequest(selectedDemoRequest)} disabled={actionBusy}>
+                      <KeyRound size={15} /> Regenerate key
+                    </button>
+                  )}
+                  {selectedDemoRequest.status === 'approved' && (
+                    <>
+                      <button className="button button-quiet button-extend" onClick={() => void handleExtendDemo(selectedDemoRequest)} disabled={actionBusy}>
+                        <Clock3 size={15} /> Extend
+                      </button>
+                      <button className="button button-quiet button-deactivate" onClick={() => void handleDeactivateDemo(selectedDemoRequest)} disabled={actionBusy}>
+                        <UserRoundX size={15} /> Deactivate
+                      </button>
+                    </>
+                  )}
+                  {selectedDemoRequest.status === 'rejected' && (
+                    <button className="button button-primary" onClick={() => void handleExtendDemo(selectedDemoRequest)} disabled={actionBusy}>
+                      <Clock3 size={15} /> Reactivate
+                    </button>
+                  )}
+                </>
+              )}
+              <button
+                className="button button-quiet button-deactivate"
+                onClick={() => {
+                  setDeleteConfirmationCode('');
+                  setSelectedDemoRequestId(null);
+                  setDeleteDemoDataRequest(selectedDemoRequest);
+                }}
+                disabled={actionBusy}
+              >
+                <Trash2 size={15} /> Delete all Firebase data
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {deleteDemoDataRequest && (
+        <div className="modal-backdrop" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !actionBusy) closeDeleteDemoConfirmation();
+        }}>
+          <section className="modal-card modal-card-narrow" role="alertdialog" aria-modal="true" aria-labelledby="delete-demo-title">
+            <div className="modal-heading">
+              <div>
+                <p className="eyebrow">PERMANENT ACTION</p>
+                <h2 id="delete-demo-title">Delete all demo data?</h2>
+              </div>
+              <button type="button" className="icon-button" onClick={closeDeleteDemoConfirmation} aria-label="Close dialog" disabled={actionBusy}>
+                <X size={18} />
+              </button>
+            </div>
+            <p className="muted-copy">
+              This permanently removes every demo request, key claim, and license for system{' '}
+              <code>{deleteDemoDataRequest.systemCode}</code>. Firebase Auth accounts and app user accounts are preserved.
+            </p>
+            <label>
+              Type the system code to confirm
+              <input
+                autoFocus
+                autoComplete="off"
+                value={deleteConfirmationCode}
+                onChange={(event) => setDeleteConfirmationCode(event.target.value)}
+              />
+            </label>
+            <div className="modal-actions">
+              <button type="button" className="button button-quiet" onClick={closeDeleteDemoConfirmation} disabled={actionBusy}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="button button-quiet button-deactivate"
+                onClick={() => void handleDeleteDemoData()}
+                disabled={
+                  actionBusy
+                  || deleteConfirmationCode.trim().toUpperCase() !== deleteDemoDataRequest.systemCode.trim().toUpperCase()
+                }
+              >
+                {actionBusy ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}
+                Delete permanently
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {regenerateKeyRequest && (
+        <div className="modal-backdrop" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !actionBusy) setRegenerateKeyRequest(null);
+        }}>
+          <section className="modal-card modal-card-narrow" role="dialog" aria-modal="true" aria-label="Regenerate demo key">
+            <div className="modal-heading">
+              <div>
+                <p className="eyebrow">DEMO KEY</p>
+                <h2>Regenerate key?</h2>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setRegenerateKeyRequest(null)} aria-label="Close dialog">
+                <X size={18} />
+              </button>
+            </div>
+            <p className="muted-copy">
+              This will replace the current key for system <code>{regenerateKeyRequest.systemCode}</code>.
+              Any previously shared key will stop working.
+            </p>
+            <div className="modal-actions">
+              <button type="button" className="button button-quiet" onClick={() => setRegenerateKeyRequest(null)} disabled={actionBusy}>
+                Cancel
+              </button>
+              <button type="button" className="button button-primary" onClick={() => void handleRegenerateDemoKey(regenerateKeyRequest)} disabled={actionBusy}>
+                {actionBusy ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}
+                Regenerate key
+              </button>
+            </div>
+          </section>
+        </div>
       )}
     </div>
   );
