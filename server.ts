@@ -274,6 +274,9 @@ app.post('/api/registration/demo-status-check', async (req, res, next) => {
     }
 
     const data = snap.data();
+    if (req.body?.eventType === 'login' && data?.revoked !== true) {
+      await licenseRef.set({ lastLoggedInAt: FieldValue.serverTimestamp() }, { merge: true });
+    }
     if (data?.revoked === true) {
       res.json({ active: false, expiresAt: null, revoked: true });
       return;
@@ -388,7 +391,14 @@ function createDemoKey(): string {
   return value;
 }
 
-function mapDemoRequest(id: string, data: Record<string, unknown>) {
+function mapDemoRequest(
+  id: string,
+  data: Record<string, unknown>,
+  licenseData?: Record<string, unknown>
+) {
+  const licenseExpiresAt = licenseData?.revoked === true
+    ? null
+    : toIsoDate(licenseData?.expiresAt);
   return {
     id,
     requestType: data.requestType === 'extension' ? 'extension' as const : 'demo' as const,
@@ -402,7 +412,8 @@ function mapDemoRequest(id: string, data: Record<string, unknown>) {
     reviewedAt: toIsoDate(data.reviewedAt),
     reviewedBy: typeof data.reviewedBy === 'string' ? data.reviewedBy : undefined,
     redeemedAt: toIsoDate(data.redeemedAt),
-    expiresAt: toIsoDate(data.expiresAt),
+    expiresAt: licenseExpiresAt || toIsoDate(data.expiresAt),
+    lastLoggedInAt: toIsoDate(licenseData?.lastLoggedInAt),
     keyUsed: data.keyUsed === true,
     hardwareInfo: typeof data.hardwareInfo === 'object' && data.hardwareInfo !== null ? data.hardwareInfo : undefined,
   };
@@ -736,8 +747,20 @@ app.get('/api/admin/demo-requests', async (_req, res, next) => {
   try {
     const { db } = getServices();
     const snapshot = await db.collection('demoRequests').get();
+    const systemCodes = [...new Set(snapshot.docs
+      .map((document) => String(document.data().systemCode || '').trim().toUpperCase())
+      .filter(isSystemCode))];
+    const licenseEntries = await Promise.all(systemCodes.map(async (systemCode) => {
+      const license = await db.collection('demoLicenses').doc(systemCodeId(systemCode)).get();
+      return [systemCode, license.data()] as const;
+    }));
+    const licensesBySystemCode = new Map(licenseEntries);
     const requests = snapshot.docs
-      .map((document) => mapDemoRequest(document.id, document.data()))
+      .map((document) => {
+        const data = document.data();
+        const systemCode = String(data.systemCode || '').trim().toUpperCase();
+        return mapDemoRequest(document.id, data, licensesBySystemCode.get(systemCode));
+      })
       .sort((left, right) => (right.requestedAt || '').localeCompare(left.requestedAt || ''));
     res.json(requests);
   } catch (error) {
@@ -989,6 +1012,54 @@ app.post('/api/admin/demo-requests/:id/deactivate', async (req, res, next) => {
 
     const updated = (await requestRef.get()).data();
     res.json({ request: mapDemoRequest(requestRef.id, updated || {}) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch('/api/admin/demo-requests/:id/expiry', async (req, res, next) => {
+  try {
+    const expiresAtInput = typeof req.body?.expiresAt === 'string' ? req.body.expiresAt : '';
+    const expiresAt = new Date(expiresAtInput);
+    if (!expiresAtInput || !Number.isFinite(expiresAt.getTime())) {
+      throw new PortalRequestError(400, 'Enter a valid demo expiration date and time.');
+    }
+
+    const { db } = getServices();
+    const requestRef = db.collection('demoRequests').doc(req.params.id);
+    let systemCode = '';
+    await db.runTransaction(async (transaction) => {
+      const requestSnapshot = await transaction.get(requestRef);
+      if (!requestSnapshot.exists) {
+        throw new PortalRequestError(404, 'Demo request not found.');
+      }
+      const requestData = requestSnapshot.data();
+      systemCode = typeof requestData?.systemCode === 'string'
+        ? requestData.systemCode.trim().toUpperCase()
+        : '';
+      if (!isSystemCode(systemCode)) {
+        throw new PortalRequestError(400, 'The demo request does not have a valid system code.');
+      }
+      if (requestData?.status !== 'approved') {
+        throw new PortalRequestError(409, 'Only an approved demo can have its expiration changed.');
+      }
+
+      const licenseRef = db.collection('demoLicenses').doc(systemCodeId(systemCode));
+      const licenseSnapshot = await transaction.get(licenseRef);
+      if (!licenseSnapshot.exists || licenseSnapshot.data()?.revoked === true) {
+        throw new PortalRequestError(409, 'This system does not have an active demo license.');
+      }
+
+      const expiration = Timestamp.fromDate(expiresAt);
+      transaction.update(licenseRef, {
+        expiresAt: expiration,
+        expirationUpdatedAt: FieldValue.serverTimestamp(),
+        expirationUpdatedBy: String(res.locals.adminUid || ''),
+      });
+      transaction.update(requestRef, { expiresAt: expiration });
+    });
+
+    res.json({ systemCode, expiresAt: expiresAt.toISOString() });
   } catch (error) {
     next(error);
   }

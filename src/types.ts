@@ -56,6 +56,7 @@ export interface DemoRequest {
   reviewedBy?: string;
   redeemedAt: string | null;
   expiresAt: string | null;
+  lastLoggedInAt: string | null;
   keyUsed: boolean;
   hardwareInfo?: HardwareInfo;
 }

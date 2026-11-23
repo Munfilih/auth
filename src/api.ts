@@ -93,6 +93,17 @@ export async function getDemoRequests(user: User): Promise<DemoRequest[]> {
   return request('/api/admin/demo-requests', user);
 }
 
+export async function updateDemoRequestExpiry(
+  user: User,
+  requestId: string,
+  expiresAt: string
+): Promise<{ systemCode: string; expiresAt: string }> {
+  return request(`/api/admin/demo-requests/${encodeURIComponent(requestId)}/expiry`, user, {
+    method: 'PATCH',
+    body: JSON.stringify({ expiresAt }),
+  });
+}
+
 export async function deleteDemoSystemData(
   user: User,
   requestId: string

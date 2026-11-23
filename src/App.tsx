@@ -36,6 +36,7 @@ import {
   reviewActivationRequest,
   reviewDemoRequest,
   updateUser,
+  updateDemoRequestExpiry,
 } from './api';
 import {
   adminLoginEmail,
@@ -82,6 +83,13 @@ function formatDate(value: string | null): string {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(new Date(value));
+}
+
+function dateTimeLocalValue(value: string | null): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '';
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
 }
 
 function StatusPill({ children, tone = 'neutral' }: {
@@ -314,6 +322,8 @@ export default function AdminPortal() {
   const [demoSearch, setDemoSearch] = useState('');
   const [demoStatusFilter, setDemoStatusFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
   const [selectedDemoRequestId, setSelectedDemoRequestId] = useState<string | null>(null);
+  const [expiryEditorRequest, setExpiryEditorRequest] = useState<DemoRequest | null>(null);
+  const [expiryInput, setExpiryInput] = useState('');
   const [deleteDemoDataRequest, setDeleteDemoDataRequest] = useState<DemoRequest | null>(null);
   const [deleteConfirmationCode, setDeleteConfirmationCode] = useState('');
   const [regenerateKeyRequest, setRegenerateKeyRequest] = useState<DemoRequest | null>(null);
@@ -665,6 +675,37 @@ export default function AdminPortal() {
     }
   };
 
+  const openDemoExpiryEditor = (request: DemoRequest) => {
+    setExpiryInput(dateTimeLocalValue(request.expiresAt));
+    setExpiryEditorRequest(request);
+  };
+
+  const handleSaveDemoExpiry = async () => {
+    if (!authUser || !expiryEditorRequest) return;
+    const expiresAt = new Date(expiryInput);
+    if (!expiryInput || !Number.isFinite(expiresAt.getTime())) {
+      notify('error', 'Choose a valid expiration date and time.');
+      return;
+    }
+
+    setActionBusy(true);
+    try {
+      const result = await updateDemoRequestExpiry(
+        authUser,
+        expiryEditorRequest.id,
+        expiresAt.toISOString()
+      );
+      setExpiryEditorRequest(null);
+      setExpiryInput('');
+      await loadData(authUser);
+      notify('success', `Expiration for ${result.systemCode} changed to ${formatDate(result.expiresAt)}.`);
+    } catch (error) {
+      notify('error', messageFrom(error));
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   const currentUsers = useMemo(
     () => users.filter((user) => user.userType === 'current'),
     [users]
@@ -954,33 +995,49 @@ export default function AdminPortal() {
                   {visibleDemoRequests.map((request) => {
                     const hardware = request.hardwareInfo;
                     return (
-                      <button
-                        type="button"
+                      <div
                         className={`demo-request-row${selectedDemoRequestId === request.id ? ' demo-request-row-selected' : ''}`}
                         key={request.id}
-                        onClick={() => setSelectedDemoRequestId(request.id)}
                       >
-                        <span className="demo-request-icon"><KeyRound size={19} /></span>
-                        <span className="demo-request-main">
-                          <span className="demo-request-heading">
-                            <strong>{request.requestType === 'extension' ? 'Demo extension' : 'Demo activation'}</strong>
-                            <StatusPill tone={request.status === 'approved' ? 'green' : request.status === 'rejected' ? 'red' : 'amber'}>{request.status}</StatusPill>
+                        <button
+                          type="button"
+                          className="demo-request-open"
+                          onClick={() => setSelectedDemoRequestId(request.id)}
+                        >
+                          <span className="demo-request-icon"><KeyRound size={19} /></span>
+                          <span className="demo-request-main">
+                            <span className="demo-request-heading">
+                              <strong>{request.requestType === 'extension' ? 'Demo extension' : 'Demo activation'}</strong>
+                              <StatusPill tone={request.status === 'approved' ? 'green' : request.status === 'rejected' ? 'red' : 'amber'}>{request.status}</StatusPill>
+                            </span>
+                            <span className="demo-request-meta">
+                              <code>{request.systemCode}</code>
+                              <span>{request.requestedBy}</span>
+                              <span>{hardware?.deviceManufacturer || hardware?.deviceModel ? `${hardware.deviceManufacturer || ''} ${hardware.deviceModel || ''}`.trim() : 'Device details unavailable'}</span>
+                              <span>Requested {formatDate(request.requestedAt)}</span>
+                            </span>
+                            {request.status === 'approved' && request.demoKey && (
+                              <small className="demo-request-key">Using demo key: <code>{request.demoKey}</code></small>
+                            )}
                           </span>
-                          <span className="demo-request-meta">
-                            <code>{request.systemCode}</code>
-                            <span>{request.requestedBy}</span>
-                            <span>{hardware?.deviceManufacturer || hardware?.deviceModel ? `${hardware.deviceManufacturer || ''} ${hardware.deviceModel || ''}`.trim() : 'Device details unavailable'}</span>
+                          <span className="demo-request-last-login">
+                            <span>Last logged in</span>
+                            <strong>{formatDate(request.lastLoggedInAt)}</strong>
                           </span>
-                        </span>
-                        <span className="demo-request-time">
-                          <span>{formatDate(request.requestedAt)}</span>
-                          {request.expiresAt && <small>{request.keyUsed ? 'Redeemed' : 'Key not used'} · expires {formatDate(request.expiresAt)}</small>}
-                          {request.status === 'approved' && request.demoKey && (
-                            <small className="demo-request-key">Using demo key: <code>{request.demoKey}</code></small>
-                          )}
-                        </span>
-                        <ChevronRight className="demo-request-chevron" size={18} />
-                      </button>
+                          <ChevronRight className="demo-request-chevron" size={18} />
+                        </button>
+                        <button
+                          type="button"
+                          className="demo-request-expiry"
+                          onClick={() => openDemoExpiryEditor(request)}
+                          disabled={actionBusy || !request.expiresAt || request.status !== 'approved'}
+                          aria-label={`Change expiration for system ${request.systemCode}`}
+                        >
+                          <span>Expires</span>
+                          <strong>{formatDate(request.expiresAt)}</strong>
+                          <Pencil size={14} />
+                        </button>
+                      </div>
                     );
                   })}
                 </div>
@@ -1160,6 +1217,45 @@ export default function AdminPortal() {
                 disabled={actionBusy}
               >
                 <Trash2 size={15} /> Delete all Firebase data
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {expiryEditorRequest && (
+        <div className="modal-backdrop" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !actionBusy) setExpiryEditorRequest(null);
+        }}>
+          <section className="modal-card modal-card-narrow" role="dialog" aria-modal="true" aria-labelledby="demo-expiry-title">
+            <div className="modal-heading">
+              <div>
+                <p className="eyebrow">DEMO LICENSE</p>
+                <h2 id="demo-expiry-title">Change expiration</h2>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setExpiryEditorRequest(null)} aria-label="Close dialog" disabled={actionBusy}>
+                <X size={18} />
+              </button>
+            </div>
+            <p className="muted-copy">
+              Set the expiration date and time for system <code>{expiryEditorRequest.systemCode}</code>.
+              You can move it earlier or later.
+            </p>
+            <label>
+              Expiration date and time
+              <input
+                autoFocus
+                type="datetime-local"
+                value={expiryInput}
+                onChange={(event) => setExpiryInput(event.target.value)}
+              />
+            </label>
+            <div className="modal-actions">
+              <button type="button" className="button button-quiet" onClick={() => setExpiryEditorRequest(null)} disabled={actionBusy}>
+                Cancel
+              </button>
+              <button type="button" className="button button-primary" onClick={() => void handleSaveDemoExpiry()} disabled={actionBusy || !expiryInput}>
+                {actionBusy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
+                Save expiration
               </button>
             </div>
           </section>
