@@ -13,6 +13,7 @@ import {
   Pencil,
   Plus,
   Search,
+  Settings2,
   ShieldCheck,
   Trash2,
   UserRound,
@@ -28,13 +29,16 @@ import {
   deleteDemoSystemData,
   deleteUser,
   extendDemoRequest,
+  convertDemoSystemToRegistered,
   getActivationRequests,
   getDemoRequests,
   getDemoSystemActivity,
   getUsers,
+  getVersionControlSettings,
   regenerateDemoRequestKey,
   reviewActivationRequest,
   reviewDemoRequest,
+  saveVersionControlSettings,
   updateUser,
   updateDemoRequestExpiry,
 } from './api';
@@ -50,6 +54,7 @@ import type { OAuthCredential, User } from 'firebase/auth';
 import type {
   ActivationRequest,
   AppUser,
+  AppModuleId,
   AppVersion,
   CreateUserInput,
   DemoRequest,
@@ -58,7 +63,9 @@ import type {
   ReviewedDemoRequest,
   UserRole,
   UserType,
+  VersionControlSettings,
 } from './types';
+import { APP_MODULES, APP_VERSIONS } from './types';
 import {
   GoogleAuthProvider,
   getRedirectResult,
@@ -69,10 +76,18 @@ import {
   signOut,
 } from 'firebase/auth';
 
-type PortalTab = 'current' | 'demo' | 'requests' | 'demo-requests';
+type PortalTab = 'current' | 'demo' | 'requests' | 'demo-requests' | 'version-control';
 type FlashMessage = { kind: 'success' | 'error'; text: string } | null;
 
-const APP_VERSIONS: AppVersion[] = ['Soft', 'Silver', 'Standard'];
+const ALL_MODULES = APP_MODULES.map((module) => module.id);
+const DEFAULT_VERSION_CONTROL_SETTINGS: VersionControlSettings = {
+  allowedModules: {
+    Soft: [...ALL_MODULES],
+    Silver: [...ALL_MODULES],
+    Standard: [...ALL_MODULES],
+  },
+  updatedAt: null,
+};
 
 function messageFrom(error: unknown): string {
   return error instanceof Error ? error.message : 'Something went wrong.';
@@ -91,6 +106,24 @@ function dateTimeLocalValue(value: string | null): string {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return '';
   return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
+function updateAllowedModule(
+  settings: VersionControlSettings,
+  version: AppVersion,
+  module: AppModuleId,
+  allowed: boolean
+): VersionControlSettings {
+  const modules = new Set(settings.allowedModules[version]);
+  if (allowed) modules.add(module);
+  else modules.delete(module);
+  return {
+    ...settings,
+    allowedModules: {
+      ...settings.allowedModules,
+      [version]: [...modules],
+    },
+  };
 }
 
 function formatBytes(bytes: number): string {
@@ -325,6 +358,7 @@ export default function AdminPortal() {
   const [users, setUsers] = useState<AppUser[]>([]);
   const [requests, setRequests] = useState<ActivationRequest[]>([]);
   const [demoRequests, setDemoRequests] = useState<DemoRequest[]>([]);
+  const [versionControl, setVersionControl] = useState(DEFAULT_VERSION_CONTROL_SETTINGS);
   const [demoSystemActivity, setDemoSystemActivity] = useState<DemoSystemActivity | null>(null);
   const [loadingDemoActivity, setLoadingDemoActivity] = useState(false);
   const [demoActivityError, setDemoActivityError] = useState('');
@@ -337,6 +371,7 @@ export default function AdminPortal() {
   const [demoSearch, setDemoSearch] = useState('');
   const [demoStatusFilter, setDemoStatusFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
   const [selectedDemoRequestId, setSelectedDemoRequestId] = useState<string | null>(null);
+  const [conversionVersion, setConversionVersion] = useState<AppVersion | ''>('');
   const [expiryEditorRequest, setExpiryEditorRequest] = useState<DemoRequest | null>(null);
   const [expiryInput, setExpiryInput] = useState('');
   const [deleteDemoDataRequest, setDeleteDemoDataRequest] = useState<DemoRequest | null>(null);
@@ -349,14 +384,16 @@ export default function AdminPortal() {
     setLoadingData(true);
     setPageError('');
     try {
-      const [loadedUsers, loadedRequests, loadedDemoRequests] = await Promise.all([
+      const [loadedUsers, loadedRequests, loadedDemoRequests, loadedVersionControl] = await Promise.all([
         getUsers(user),
         getActivationRequests(user),
         getDemoRequests(user),
+        getVersionControlSettings(user),
       ]);
       setUsers(loadedUsers);
       setRequests(loadedRequests);
       setDemoRequests(loadedDemoRequests);
+      setVersionControl(loadedVersionControl);
     } catch (error) {
       setPageError(messageFrom(error));
     } finally {
@@ -389,6 +426,10 @@ export default function AdminPortal() {
       active = false;
     };
   }, [authUser, selectedDemoRequestId]);
+
+  useEffect(() => {
+    setConversionVersion('');
+  }, [selectedDemoRequestId]);
 
   useEffect(() => {
     const auth = firebaseAuth;
@@ -503,6 +544,7 @@ export default function AdminPortal() {
     setUsers([]);
     setRequests([]);
     setDemoRequests([]);
+    setVersionControl(DEFAULT_VERSION_CONTROL_SETTINGS);
     setIssuedDemoKeys({});
     setTab('current');
   };
@@ -581,6 +623,44 @@ export default function AdminPortal() {
       setRequestEditorOpen(false);
       await loadData(authUser);
       notify('success', 'Activation request submitted.');
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleSaveVersionControl = async () => {
+    if (!authUser) return;
+    setActionBusy(true);
+    try {
+      const saved = await saveVersionControlSettings(authUser, versionControl.allowedModules);
+      setVersionControl(saved);
+      notify('success', 'Version module permissions saved.');
+    } catch (error) {
+      notify('error', messageFrom(error));
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleConvertDemoSystem = async (request: DemoRequest) => {
+    if (!authUser || !conversionVersion) {
+      notify('error', 'Choose Standard, Silver, or Soft before converting this system.');
+      return;
+    }
+    setActionBusy(true);
+    try {
+      const result = await convertDemoSystemToRegistered(
+        authUser,
+        request.id,
+        conversionVersion
+      );
+      await loadData(authUser);
+      notify(
+        'success',
+        `System ${result.systemCode} is now registered as ${result.appVersion}.`
+      );
+    } catch (error) {
+      notify('error', messageFrom(error));
     } finally {
       setActionBusy(false);
     }
@@ -686,7 +766,7 @@ export default function AdminPortal() {
       await loadData(authUser);
       notify(
         'success',
-        `Deleted ${result.deletedRequests} request(s), ${result.deletedKeyClaims} key claim(s), ${result.deletedLicenses} license(s), ${result.deletedLoginEvents} login record(s), and ${result.deletedTelemetryRecords} telemetry summary(s) for ${result.systemCode}. Firebase Auth accounts were preserved.`
+        `Deleted ${result.deletedRequests} request(s), ${result.deletedKeyClaims} key claim(s), ${result.deletedLicenses} demo license(s), ${result.deletedRegisteredSystems} registration(s), ${result.deletedLoginEvents} login record(s), and ${result.deletedTelemetryRecords} telemetry summary(s) for ${result.systemCode}. Firebase Auth accounts were preserved.`
       );
     } catch (error) {
       notify('error', messageFrom(error));
@@ -867,23 +947,29 @@ export default function AdminPortal() {
     );
   }
 
-  const activeTitle =
-    tab === 'current' ? 'Current Users' : tab === 'demo' ? 'Demo Users' : 'Activation Requests';
-  const resolvedTitle = tab === 'demo-requests' ? 'Demo Key Requests' : activeTitle;
+  const resolvedTitle = ({
+    current: 'Current Users',
+    demo: 'Demo Users',
+    requests: 'Activation Requests',
+    'demo-requests': 'Demo Key Requests',
+    'version-control': 'Version Control Settings',
+  } satisfies Record<PortalTab, string>)[tab];
   const navItems: Array<{
     id: PortalTab;
     label: string;
     icon: typeof Users;
     badge?: number;
-    section: 'accounts' | 'requests';
+    section: 'accounts' | 'requests' | 'settings';
   }> = [
     { id: 'current', label: 'Current Users', icon: Users, section: 'accounts' },
     { id: 'demo', label: 'Demo Users', icon: UserRoundPlus, section: 'accounts' },
     { id: 'requests', label: 'Activation Requests', icon: FileClock, badge: pendingRequests, section: 'requests' },
     { id: 'demo-requests', label: 'Demo Key Requests', icon: KeyRound, badge: pendingDemoRequests, section: 'requests' },
+    { id: 'version-control', label: 'Version Control Settings', icon: Settings2, section: 'settings' },
   ];
   const accountNavItems = navItems.filter((item) => item.section === 'accounts');
   const requestNavItems = navItems.filter((item) => item.section === 'requests');
+  const settingsNavItems = navItems.filter((item) => item.section === 'settings');
   const renderNavItem = (item: (typeof navItems)[number]) => {
     const Icon = item.icon;
     return (
@@ -911,6 +997,8 @@ export default function AdminPortal() {
           {accountNavItems.map(renderNavItem)}
           <p className="nav-caption nav-group-caption">REQUESTS</p>
           {requestNavItems.map(renderNavItem)}
+          <p className="nav-caption nav-group-caption">SETTINGS</p>
+          {settingsNavItems.map(renderNavItem)}
         </nav>
         <div className="sidebar-bottom">
           <div className="security-note"><ShieldCheck size={16} /><span>Firebase secured<br /><small>Admin access only</small></span></div>
@@ -943,7 +1031,9 @@ export default function AdminPortal() {
                     ? 'Manage demo accounts separately from current users.'
                     : tab === 'demo-requests'
                       ? 'Review two-day demo key activation and extension requests from aptPOS.'
-                    : 'Review and process app version activation requests.'}
+                      : tab === 'version-control'
+                        ? 'Choose which POS modules are available in each registered app version.'
+                        : 'Review and process app version activation requests.'}
               </p>
             </div>
             {tab === 'requests' ? (
@@ -1049,6 +1139,9 @@ export default function AdminPortal() {
                               <span>{request.requestedBy}</span>
                               <span>{hardware?.deviceManufacturer || hardware?.deviceModel ? `${hardware.deviceManufacturer || ''} ${hardware.deviceModel || ''}`.trim() : 'Device details unavailable'}</span>
                               <span>Requested {formatDate(request.requestedAt)}</span>
+                              {request.registeredSystem && (
+                                <span>Registered · {request.registeredVersion || 'Version unavailable'}</span>
+                              )}
                             </span>
                             {request.status === 'approved' && request.demoKey && (
                               <small className="demo-request-key">Using demo key: <code>{request.demoKey}</code></small>
@@ -1065,18 +1158,69 @@ export default function AdminPortal() {
                           type="button"
                           className="demo-request-expiry"
                           onClick={() => openDemoExpiryEditor(request)}
-                          disabled={actionBusy || !request.expiresAt || request.status !== 'approved'}
-                          aria-label={`Change expiration for system ${request.systemCode}`}
+                          disabled={actionBusy || request.registeredSystem || !request.expiresAt || request.status !== 'approved'}
+                          aria-label={request.registeredSystem
+                            ? `Registered as ${request.registeredVersion || 'unknown version'}`
+                            : `Change expiration for system ${request.systemCode}`}
                         >
-                          <span>Expires</span>
-                          <strong>{formatDate(request.expiresAt)}</strong>
-                          <Pencil size={14} />
+                          <span>{request.registeredSystem ? 'Version' : 'Expires'}</span>
+                          <strong>{request.registeredSystem
+                            ? request.registeredVersion || 'Registered'
+                            : formatDate(request.expiresAt)}</strong>
+                          {!request.registeredSystem && <Pencil size={14} />}
                         </button>
                       </div>
                     );
                   })}
                 </div>
               )}
+            </section>
+          ) : tab === 'version-control' ? (
+            <section className="version-control-panel">
+              <div className="version-control-header">
+                <div>
+                  <h2>Allowed modules by version</h2>
+                  <p>Check only modules this version may use. Unchecked modules are blocked for every account on the registered system, including aptadmin. Online POS systems sync changes on their next status check.</p>
+                </div>
+                <button
+                  type="button"
+                  className="button button-primary"
+                  onClick={() => void handleSaveVersionControl()}
+                  disabled={actionBusy}
+                >
+                  {actionBusy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
+                  Save version settings
+                </button>
+              </div>
+              <div className="version-control-grid">
+                {APP_VERSIONS.map((version) => (
+                  <section className="version-control-card" key={version}>
+                    <div className="version-control-card-heading">
+                      <h3>{version}</h3>
+                      <span>{versionControl.allowedModules[version].length} of {APP_MODULES.length} modules</span>
+                    </div>
+                    <div className="version-module-list">
+                      {APP_MODULES.map((module) => (
+                        <label className="version-module-check" key={module.id}>
+                          <input
+                            type="checkbox"
+                            checked={versionControl.allowedModules[version].includes(module.id)}
+                            onChange={(event) => {
+                              setVersionControl((current) =>
+                                updateAllowedModule(current, version, module.id, event.target.checked)
+                              );
+                            }}
+                          />
+                          <span>{module.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+              <p className="version-control-note">
+                New installations allow all modules by default until you configure and save each version.
+              </p>
             </section>
           ) : (
             <section className="table-card">
@@ -1163,6 +1307,12 @@ export default function AdminPortal() {
                   {selectedDemoRequest.status}
                 </StatusPill>
               </div>
+              {selectedDemoRequest.registeredSystem && (
+                <div>
+                  <span>Registration</span>
+                  <StatusPill tone="green">Registered · {selectedDemoRequest.registeredVersion || 'Version unavailable'}</StatusPill>
+                </div>
+              )}
             </div>
 
             <dl className="demo-detail-grid">
@@ -1171,6 +1321,50 @@ export default function AdminPortal() {
               <div><dt>Reviewed</dt><dd>{selectedDemoRequest.reviewedAt ? formatDate(selectedDemoRequest.reviewedAt) : 'Not reviewed'}</dd></div>
               {selectedDemoRequest.expiresAt && <div><dt>Expiration</dt><dd>{formatDate(selectedDemoRequest.expiresAt)}</dd></div>}
             </dl>
+
+            <div className="hardware-detail-card">
+              <h3>System registration</h3>
+              {selectedDemoRequest.registeredSystem ? (
+                <p className="muted-copy">
+                  This system is registered on the {selectedDemoRequest.registeredVersion || 'selected'} version.
+                  Its available modules follow the saved version control settings.
+                </p>
+              ) : selectedDemoRequest.status === 'approved' ? (
+                <>
+                  <p className="muted-copy">
+                    Convert this demo installation to a registered system and assign its app version.
+                  </p>
+                  <label className="version-conversion-control">
+                    Registered version
+                    <select
+                      required
+                      value={conversionVersion}
+                      onChange={(event) => {
+                        const version = APP_VERSIONS.find((item) => item === event.target.value);
+                        setConversionVersion(version || '');
+                      }}
+                      disabled={actionBusy}
+                    >
+                      <option value="">Choose a version</option>
+                      {APP_VERSIONS.map((version) => (
+                        <option key={version} value={version}>{version}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className="button button-primary"
+                    onClick={() => void handleConvertDemoSystem(selectedDemoRequest)}
+                    disabled={actionBusy || !conversionVersion}
+                  >
+                    {actionBusy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
+                    Convert to Registered
+                  </button>
+                </>
+              ) : (
+                <p className="muted-copy">Approve this demo request before converting its system.</p>
+              )}
+            </div>
 
             <div className="hardware-detail-card">
               <h3>System activity</h3>
@@ -1286,12 +1480,12 @@ export default function AdminPortal() {
                 </>
               ) : (
                 <>
-                  {selectedDemoRequest.status === 'approved' && (
+                  {selectedDemoRequest.status === 'approved' && !selectedDemoRequest.registeredSystem && (
                     <button className="button button-quiet" onClick={() => setRegenerateKeyRequest(selectedDemoRequest)} disabled={actionBusy}>
                       <KeyRound size={15} /> Regenerate key
                     </button>
                   )}
-                  {selectedDemoRequest.status === 'approved' && (
+                  {selectedDemoRequest.status === 'approved' && !selectedDemoRequest.registeredSystem && (
                     <>
                       <button className="button button-quiet button-extend" onClick={() => void handleExtendDemo(selectedDemoRequest)} disabled={actionBusy}>
                         <Clock3 size={15} /> Extend
@@ -1301,7 +1495,7 @@ export default function AdminPortal() {
                       </button>
                     </>
                   )}
-                  {selectedDemoRequest.status === 'rejected' && (
+                  {selectedDemoRequest.status === 'rejected' && !selectedDemoRequest.registeredSystem && (
                     <button className="button button-primary" onClick={() => void handleExtendDemo(selectedDemoRequest)} disabled={actionBusy}>
                       <Clock3 size={15} /> Reactivate
                     </button>
@@ -1377,7 +1571,7 @@ export default function AdminPortal() {
               </button>
             </div>
             <p className="muted-copy">
-              This permanently removes every demo request, key claim, and license for system{' '}
+              This permanently removes every demo request, key claim, demo license, and registered-system entitlement for system{' '}
               <code>{deleteDemoDataRequest.systemCode}</code>. Firebase Auth accounts and app user accounts are preserved.
             </p>
             <label>

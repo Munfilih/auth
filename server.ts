@@ -10,7 +10,15 @@ import {
   type DocumentReference,
   type Firestore,
 } from 'firebase-admin/firestore';
-import type { AppVersion, DemoSystemInfo, UserRole, UserType } from './src/types';
+import { APP_MODULES, APP_VERSIONS } from './src/types';
+import type {
+  AppModuleId,
+  DemoSystemInfo,
+  UserRole,
+  UserType,
+  VersionControlSettings,
+  VersionModulePolicy,
+} from './src/types';
 
 const app = express();
 const port = Number(process.env.PORT || process.env.ADMIN_API_PORT || 3002);
@@ -282,14 +290,20 @@ app.post('/api/registration/demo-status-check', async (req, res, next) => {
     }
 
     const { db } = getServices();
-    const licenseRef = db.collection('demoLicenses').doc(systemCodeId(systemCode));
-    const snap = await licenseRef.get();
-    if (!snap.exists) {
+    const systemId = systemCodeId(systemCode);
+    const registeredRef = db.collection('registeredSystems').doc(systemId);
+    const licenseRef = db.collection('demoLicenses').doc(systemId);
+    const [registeredSnapshot, licenseSnapshot] = await Promise.all([
+      registeredRef.get(),
+      licenseRef.get(),
+    ]);
+    const registeredData = registeredSnapshot.data();
+    const isRegistered = registeredSnapshot.exists && registeredData?.status === 'active';
+    if (!isRegistered && !licenseSnapshot.exists) {
       res.json({ active: false, expiresAt: null });
       return;
     }
 
-    const data = snap.data();
     const eventType = req.body?.eventType === 'login' ? 'login' : 'check';
     const systemInfo = eventType === 'login'
       ? parseDemoSystemInfo(req.body?.systemInfo)
@@ -298,18 +312,37 @@ app.post('/api/registration/demo-status-check', async (req, res, next) => {
     const networkBytesReceived = Number.isSafeInteger(contentLength) && contentLength >= 0
       ? contentLength
       : Buffer.byteLength(JSON.stringify(req.body ?? {}));
-    const expiresAt = data?.expiresAt instanceof Timestamp
-      ? data.expiresAt.toDate().toISOString()
-      : null;
-    const responsePayload = data?.revoked === true
-      ? { active: false, expiresAt: null, revoked: true }
-      : { active: Boolean(expiresAt && Date.parse(expiresAt) > Date.now()), expiresAt };
+    let activityRef = licenseRef;
+    let responsePayload: Record<string, unknown>;
+    if (isRegistered && registeredData) {
+      const appVersion = APP_VERSIONS.find((version) => version === registeredData.appVersion);
+      if (!appVersion) {
+        throw new Error('The registered system has an invalid app version.');
+      }
+      const versionSettings = await getVersionControlSettings(db);
+      activityRef = registeredRef;
+      responsePayload = {
+        active: true,
+        expiresAt: null,
+        registered: true,
+        appVersion,
+        allowedModules: versionSettings.allowedModules[appVersion],
+      };
+    } else {
+      const data = licenseSnapshot.data();
+      const expiresAt = data?.expiresAt instanceof Timestamp
+        ? data.expiresAt.toDate().toISOString()
+        : null;
+      responsePayload = data?.revoked === true
+        ? { active: false, expiresAt: null, revoked: true }
+        : { active: Boolean(expiresAt && Date.parse(expiresAt) > Date.now()), expiresAt };
+    }
     const networkBytesSent = Buffer.byteLength(JSON.stringify(responsePayload));
 
     try {
       await storeDemoStatusActivity(
         db,
-        licenseRef,
+        activityRef,
         systemCode,
         eventType,
         networkBytesReceived,
@@ -462,8 +495,56 @@ function parseUserRole(value: unknown): UserRole | null {
   return value === 'cashier' || value === 'custom' ? value : null;
 }
 
-const APP_VERSIONS: AppVersion[] = ['Soft', 'Silver', 'Standard'];
 const DEMO_DURATION_MS = 2 * 24 * 60 * 60 * 1000;
+
+function defaultVersionControlSettings(): VersionControlSettings {
+  const allModules = APP_MODULES.map((module) => module.id);
+  return {
+    allowedModules: {
+      Soft: [...allModules],
+      Silver: [...allModules],
+      Standard: [...allModules],
+    },
+    updatedAt: null,
+  };
+}
+
+function parseModuleList(value: unknown): AppModuleId[] {
+  if (!Array.isArray(value)) {
+    throw new Error('Each app version must have a list of allowed modules.');
+  }
+  const modules = value.map((module) => {
+    const knownModule = typeof module === 'string'
+      ? APP_MODULES.find((known) => known.id === module)
+      : undefined;
+    if (!knownModule) {
+      throw new Error('The module list contains an invalid module.');
+    }
+    return knownModule.id;
+  });
+  return [...new Set(modules)];
+}
+
+async function getVersionControlSettings(db: Firestore): Promise<VersionControlSettings> {
+  const snapshot = await db.collection('versionControl').doc('settings').get();
+  if (!snapshot.exists) return defaultVersionControlSettings();
+
+  const data = snapshot.data();
+  const source = data?.allowedModules;
+  if (typeof source !== 'object' || source === null || Array.isArray(source)) {
+    throw new Error('The stored version control settings are invalid.');
+  }
+  const modules = source as Record<string, unknown>;
+  const allowedModules: VersionModulePolicy = {
+    Soft: parseModuleList(modules.Soft),
+    Silver: parseModuleList(modules.Silver),
+    Standard: parseModuleList(modules.Standard),
+  };
+  return {
+    allowedModules,
+    updatedAt: toIsoDate(data?.updatedAt),
+  };
+}
 
 class PortalRequestError extends Error {
   constructor(readonly status: number, message: string) {
@@ -493,7 +574,8 @@ function mapDemoRequest(
   id: string,
   data: Record<string, unknown>,
   licenseData?: Record<string, unknown>,
-  telemetryData?: Record<string, unknown>
+  telemetryData?: Record<string, unknown>,
+  registeredData?: Record<string, unknown>
 ) {
   const licenseExpiresAt = licenseData?.revoked === true
     ? null
@@ -518,6 +600,8 @@ function mapDemoRequest(
     networkBytesReceived: numberOrZero(telemetryData?.networkBytesReceived),
     networkBytesSent: numberOrZero(telemetryData?.networkBytesSent),
     systemInfo: parseDemoSystemInfo(telemetryData?.systemInfo),
+    registeredSystem: registeredData?.status === 'active',
+    registeredVersion: APP_VERSIONS.find((version) => version === registeredData?.appVersion),
     keyUsed: data.keyUsed === true,
     hardwareInfo: typeof data.hardwareInfo === 'object' && data.hardwareInfo !== null ? data.hardwareInfo : undefined,
   };
@@ -525,6 +609,51 @@ function mapDemoRequest(
 
 app.get('/api/admin/session', (_req, res) => {
   res.json({ username: res.locals.adminUsername || 'aptadmin' });
+});
+
+app.get('/api/admin/version-control', async (_req, res, next) => {
+  try {
+    const { db } = getServices();
+    res.json(await getVersionControlSettings(db));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put('/api/admin/version-control', async (req, res, next) => {
+  try {
+    const { db } = getServices();
+    const input = req.body as Record<string, unknown>;
+    const source = input.allowedModules;
+    if (typeof source !== 'object' || source === null || Array.isArray(source)) {
+      throw new PortalRequestError(400, 'Choose allowed modules for each app version.');
+    }
+
+    let allowedModules: VersionModulePolicy;
+    try {
+      const modules = source as Record<string, unknown>;
+      allowedModules = {
+        Soft: parseModuleList(modules.Soft),
+        Silver: parseModuleList(modules.Silver),
+        Standard: parseModuleList(modules.Standard),
+      };
+    } catch (error) {
+      throw new PortalRequestError(
+        400,
+        error instanceof Error ? error.message : 'The module policy is invalid.'
+      );
+    }
+
+    const updatedAt = new Date().toISOString();
+    await db.collection('versionControl').doc('settings').set({
+      allowedModules,
+      updatedAt: FieldValue.serverTimestamp(),
+      updatedBy: String(res.locals.adminUid),
+    });
+    res.json({ allowedModules, updatedAt });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get('/api/admin/users', async (_req, res, next) => {
@@ -862,8 +991,13 @@ app.get('/api/admin/demo-requests', async (_req, res, next) => {
       const telemetry = await db.collection('demoSystemTelemetry').doc(systemCodeId(systemCode)).get();
       return [systemCode, telemetry.data()] as const;
     }));
+    const registeredEntries = await Promise.all(systemCodes.map(async (systemCode) => {
+      const registered = await db.collection('registeredSystems').doc(systemCodeId(systemCode)).get();
+      return [systemCode, registered.data()] as const;
+    }));
     const licensesBySystemCode = new Map(licenseEntries);
     const telemetryBySystemCode = new Map(telemetryEntries);
+    const registeredBySystemCode = new Map(registeredEntries);
     const requests = snapshot.docs
       .map((document) => {
         const data = document.data();
@@ -872,11 +1006,85 @@ app.get('/api/admin/demo-requests', async (_req, res, next) => {
           document.id,
           data,
           licensesBySystemCode.get(systemCode),
-          telemetryBySystemCode.get(systemCode)
+          telemetryBySystemCode.get(systemCode),
+          registeredBySystemCode.get(systemCode)
         );
       })
       .sort((left, right) => (right.requestedAt || '').localeCompare(left.requestedAt || ''));
     res.json(requests);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/admin/demo-requests/:id/convert', async (req, res, next) => {
+  try {
+    const { db } = getServices();
+    const appVersion = APP_VERSIONS.find((version) => version === req.body?.appVersion);
+    if (!appVersion) {
+      throw new PortalRequestError(400, 'Choose Standard, Silver, or Soft for this system.');
+    }
+
+    const requestRef = db.collection('demoRequests').doc(req.params.id);
+    const requestSnapshot = await requestRef.get();
+    const requestData = requestSnapshot.data();
+    if (!requestSnapshot.exists || !requestData) {
+      throw new PortalRequestError(404, 'Demo request not found.');
+    }
+    if (requestData.status !== 'approved') {
+      throw new PortalRequestError(409, 'Approve the demo request before converting its system.');
+    }
+    const systemCode = typeof requestData.systemCode === 'string'
+      ? requestData.systemCode.trim().toUpperCase()
+      : '';
+    if (!isSystemCode(systemCode)) {
+      throw new PortalRequestError(400, 'The demo request does not have a valid system code.');
+    }
+
+    const systemId = systemCodeId(systemCode);
+    const registeredRef = db.collection('registeredSystems').doc(systemId);
+    const demoLicenseRef = db.collection('demoLicenses').doc(systemId);
+    const adminUid = String(res.locals.adminUid);
+    await db.runTransaction(async (transaction) => {
+      const [currentRequest, currentRegistration] = await Promise.all([
+        transaction.get(requestRef),
+        transaction.get(registeredRef),
+      ]);
+      if (!currentRequest.exists) {
+        throw new PortalRequestError(404, 'Demo request not found.');
+      }
+      if (currentRequest.data()?.status !== 'approved') {
+        throw new PortalRequestError(409, 'Approve the demo request before converting its system.');
+      }
+      if (currentRegistration.exists) {
+        throw new PortalRequestError(409, 'This system is already registered.');
+      }
+
+      const convertedAt = FieldValue.serverTimestamp();
+      transaction.set(registeredRef, {
+        systemCode,
+        status: 'active',
+        appVersion,
+        convertedAt,
+        convertedBy: adminUid,
+        sourceRequestId: requestRef.id,
+      });
+      transaction.set(demoLicenseRef, {
+        systemCode,
+        revoked: true,
+        revokedAt: convertedAt,
+        revokedBy: adminUid,
+        convertedToRegistered: true,
+      }, { merge: true });
+      transaction.update(requestRef, {
+        convertedToRegistered: true,
+        registeredVersion: appVersion,
+        convertedAt,
+        convertedBy: adminUid,
+      });
+    });
+
+    res.json({ systemCode, appVersion, registeredSystem: true });
   } catch (error) {
     next(error);
   }
@@ -961,10 +1169,13 @@ app.delete('/api/admin/demo-requests/:id/system-data', async (req, res, next) =>
       claimRefs.set(document.ref.path, document.ref);
     }
 
-    const telemetryRef = db.collection('demoSystemTelemetry').doc(systemCodeId(systemCode));
-    const [telemetrySnapshot, loginEventsSnapshot] = await Promise.all([
+    const systemId = systemCodeId(systemCode);
+    const telemetryRef = db.collection('demoSystemTelemetry').doc(systemId);
+    const registeredRef = db.collection('registeredSystems').doc(systemId);
+    const [telemetrySnapshot, loginEventsSnapshot, registeredSnapshot] = await Promise.all([
       telemetryRef.get(),
       telemetryRef.collection('logins').get(),
+      registeredRef.get(),
     ]);
 
     const requestIds = [...new Set([
@@ -1012,6 +1223,7 @@ app.delete('/api/admin/demo-requests/:id/system-data', async (req, res, next) =>
 
     const deleteGroups = [
       [...licenseRefs.values()],
+      ...(registeredSnapshot.exists ? [[registeredRef]] : []),
       [...claimRefs.values()],
       loginEventsSnapshot.docs.map((document) => document.ref),
       ...(telemetrySnapshot.exists ? [[telemetryRef]] : []),
@@ -1031,6 +1243,7 @@ app.delete('/api/admin/demo-requests/:id/system-data', async (req, res, next) =>
       deletedRequestIds: [...requestRefs.values()].map((reference) => reference.id),
       deletedKeyClaims: claimRefs.size,
       deletedLicenses: licenseRefs.size,
+      deletedRegisteredSystems: registeredSnapshot.exists ? 1 : 0,
       deletedLoginEvents: loginEventsSnapshot.size,
       deletedTelemetryRecords: telemetrySnapshot.exists ? 1 : 0,
       authAccountsDeleted: 0,

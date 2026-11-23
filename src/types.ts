@@ -1,4 +1,32 @@
 export type AppVersion = 'Soft' | 'Silver' | 'Standard';
+export const APP_VERSIONS: AppVersion[] = ['Soft', 'Silver', 'Standard'];
+
+export const APP_MODULES = [
+  { id: 'register', label: 'Counter' },
+  { id: 'inventory', label: 'Inventory' },
+  { id: 'purchases', label: 'Purchases' },
+  { id: 'purchase-history', label: 'Purchase History' },
+  { id: 'purchase-return-register', label: 'Purchase Returns' },
+  { id: 'purchase-return-history', label: 'Purchase Return History' },
+  { id: 'customers', label: 'Customers' },
+  { id: 'vendors', label: 'Vendors' },
+  { id: 'sales', label: 'Sales History' },
+  { id: 'return-register', label: 'Sales Returns' },
+  { id: 'return-history', label: 'Sales Return History' },
+  { id: 'accounts', label: 'Accounts & Cash Book' },
+  { id: 'reports', label: 'Reports' },
+  { id: 'shift', label: 'Shift' },
+  { id: 'files', label: 'Files' },
+] as const;
+
+export type AppModuleId = (typeof APP_MODULES)[number]['id'];
+export type VersionModulePolicy = Record<AppVersion, AppModuleId[]>;
+
+export interface VersionControlSettings {
+  allowedModules: VersionModulePolicy;
+  updatedAt: string | null;
+}
+
 export type UserType = 'current' | 'demo';
 export type UserRole = 'cashier' | 'custom';
 export type ActivationStatus = 'pending' | 'approved' | 'rejected';
@@ -91,6 +119,8 @@ export interface DemoRequest {
   networkBytesReceived: number;
   networkBytesSent: number;
   systemInfo?: DemoSystemInfo;
+  registeredSystem: boolean;
+  registeredVersion?: AppVersion;
   keyUsed: boolean;
   hardwareInfo?: HardwareInfo;
 }
