@@ -151,7 +151,7 @@ app.post('/api/registration/demo-activation', async (req, res, next) => {
     const activationKey = typeof req.body?.activationKey === 'string'
       ? req.body.activationKey.trim().toUpperCase()
       : '';
-    if (!isSystemCode(systemCode) || activationKey.length < 20 || activationKey.length > 100) {
+    if (!isSystemCode(systemCode) || !activationKey || activationKey.length < 10 || activationKey.length > 100) {
       res.status(400).json({ error: 'Enter a valid system code and demo key.' });
       return;
     }
@@ -321,7 +321,7 @@ class PortalRequestError extends Error {
 }
 
 function isSystemCode(value: unknown): value is string {
-  return typeof value === 'string' && /^APT(?:-[A-Z0-9]{4}){5}$/.test(value);
+  return typeof value === 'string' && (/^\d{10}$/.test(value.trim()) || /^APT(?:-[A-Z0-9]{4}){5}$/.test(value.trim()));
 }
 
 function systemCodeId(systemCode: string): string {
@@ -329,12 +329,12 @@ function systemCodeId(systemCode: string): string {
 }
 
 function demoKeyHash(key: string): string {
-  return createHash('sha256').update(key.trim().toUpperCase()).digest('hex');
+  return createHash('sha256').update(key.trim()).digest('hex');
 }
 
 function createDemoKey(): string {
-  const value = randomBytes(18).toString('hex').toUpperCase();
-  return `APT-DEMO-${value.match(/.{1,4}/g)?.join('-') || value}`;
+  const value = (BigInt(`0x${randomBytes(8).toString('hex')}`) % 900000000000n + 100000000000n).toString();
+  return value;
 }
 
 function mapDemoRequest(id: string, data: Record<string, unknown>) {
