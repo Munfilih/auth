@@ -6,27 +6,30 @@
   "scripts": {
     "dev": "concurrently -k -n API,WEB \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "tsx server.ts",
-    "dev:web": "vite --host 192.168.1.113 --port 3001 --strictPort",
+    "dev:web": "vite --host 0.0.0.0 --port 3001 --strictPort",
     "build": "tsc --noEmit && vite build",
     "check": "tsc --noEmit",
     "start:api": "tsx server.ts"
   },
   "dependencies": {
+    "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "firebase": "10.14.1",
     "firebase-admin": "12.7.0",
     "lucide-react": "^0.546.0",
-    "dotenv": "^16.4.7",
+    "antd": "^5.24.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.5",
     "@types/express": "^5.0.0",
     "@types/node": "^22.14.0",
     "@types/react": "^19.0.1",
     "@types/react-dom": "^19.0.1",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.2",
+    "tailwindcss": "^4.3.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vite": "^6.0.7"
