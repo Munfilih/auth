@@ -33,6 +33,7 @@ function formatDate(value: string | null): string {
 interface DashboardPageProps {
   registeredBusinesses: RegisteredBusiness[];
   demoRequests: DemoRequest[];
+  loadingData: boolean;
   onNavigate: (tab: 'registered' | 'demo' | 'demo-requests') => void;
   onRegisterBusiness: () => void;
   onLoadRegistrationLicenses: () => Promise<DeviceRegistrationLicense[]>;
@@ -44,6 +45,7 @@ interface DashboardPageProps {
 export const DashboardPage: React.FC<DashboardPageProps> = ({
   registeredBusinesses,
   demoRequests,
+  loadingData,
   onNavigate,
   onRegisterBusiness,
   onLoadRegistrationLicenses,
@@ -89,6 +91,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             <Button
               icon={<Laptop size={15} />}
               onClick={() => setRegisterDeviceOpen(true)}
+              disabled={loadingData}
             >
               Register Device
             </Button>
@@ -109,6 +112,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           <StatCard
             title="Registered Businesses"
             value={registeredBusinesses.length}
+            loading={loadingData}
             subtitle={`${activeBusinesses.length} active · ${pendingBusinesses.length} pending`}
             icon={Building2}
             iconColor="#7c3aed"
@@ -121,6 +125,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           <StatCard
             title="Active System Codes"
             value={totalSystemCodes}
+            loading={loadingData}
             subtitle="Registered POS terminal nodes"
             icon={Sparkles}
             iconColor="#0284c7"
@@ -133,6 +138,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           <StatCard
             title="Approved Demos"
             value={approvedDemos.length}
+            loading={loadingData}
             subtitle="Active evaluation licenses"
             icon={Users}
             iconColor="#059669"
@@ -145,6 +151,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           <StatCard
             title="Pending Requests"
             value={pendingRequests.length}
+            loading={loadingData}
             subtitle={pendingRequests.length > 0 ? 'Requires administrator review' : 'Queue is all caught up'}
             icon={Clock}
             iconColor={pendingRequests.length > 0 ? '#d97706' : '#64748b'}
@@ -177,6 +184,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           >
             <Table
               dataSource={recentBusinesses}
+              loading={loadingData}
               rowKey="id"
               pagination={false}
               size="middle"
@@ -256,6 +264,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           >
             <Table
               dataSource={recentRequests}
+              loading={loadingData}
               rowKey="id"
               pagination={false}
               size="middle"

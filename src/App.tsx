@@ -108,6 +108,7 @@ export default function AdminPortal() {
   const [authChecking, setAuthChecking] = useState(true);
   const [loginError, setLoginError] = useState('');
   const pendingGoogleCredential = useRef<OAuthCredential | null>(null);
+  const authInitializationRef = useRef<{ uid: string; promise: Promise<void> } | null>(null);
 
   // Navigation state
   const [tab, setTab] = useState<NavigationKey>('dashboard');
@@ -193,6 +194,30 @@ export default function AdminPortal() {
       setLoadingData(false);
     }
   }, []);
+
+  const completeAuthentication = useCallback((user: User): Promise<void> => {
+    const activeInitialization = authInitializationRef.current;
+    if (activeInitialization?.uid === user.uid) return activeInitialization.promise;
+
+    const promise = (async () => {
+      if (user.email?.toLowerCase() !== adminLoginEmail?.toLowerCase()) {
+        throw new Error(`Use the Google account configured for ${adminLoginEmail}.`);
+      }
+      const session = await verifyPortalAdmin(user);
+      setAdminUsername(session.username);
+      setAuthUser(user);
+      setAuthChecking(false);
+      void loadData(user);
+    })().catch((error: unknown) => {
+      if (authInitializationRef.current?.uid === user.uid) {
+        authInitializationRef.current = null;
+      }
+      throw error;
+    });
+
+    authInitializationRef.current = { uid: user.uid, promise };
+    return promise;
+  }, [loadData]);
 
   const loadDefaultCredentialAudit = useCallback(async (user: User) => {
     setCredentialAuditLoading(true);
@@ -286,23 +311,13 @@ export default function AdminPortal() {
         return;
       }
       if (!user) {
+        authInitializationRef.current = null;
         setAuthUser(null);
         setAuthChecking(false);
         return;
       }
       setAuthChecking(true);
-      void Promise.resolve()
-        .then(() => {
-          if (user.email?.toLowerCase() !== adminLoginEmail?.toLowerCase()) {
-            throw new Error(`Use the Google account configured for ${adminLoginEmail}.`);
-          }
-          return verifyPortalAdmin(user);
-        })
-        .then(async (session) => {
-          setAdminUsername(session.username);
-          setAuthUser(user);
-          await loadData(user);
-        })
+      void completeAuthentication(user)
         .catch(async (error: unknown) => {
           setLoginError(messageFrom(error));
           await signOut(auth);
@@ -310,7 +325,7 @@ export default function AdminPortal() {
         })
         .finally(() => setAuthChecking(false));
     });
-  }, [loadData]);
+  }, [completeAuthentication]);
 
   // Login handler
   const handleLogin = async (password: string) => {
@@ -325,11 +340,8 @@ export default function AdminPortal() {
       if (pendingGoogleCredential.current) {
         await linkWithCredential(credential.user, pendingGoogleCredential.current);
         pendingGoogleCredential.current = null;
+        await completeAuthentication(credential.user);
       }
-      const session = await verifyPortalAdmin(credential.user);
-      setAdminUsername(session.username);
-      setAuthUser(credential.user);
-      await loadData(credential.user);
     } catch (error) {
       if (firebaseAuth.currentUser) await signOut(firebaseAuth);
       setLoginError(messageFrom(error));
@@ -393,6 +405,7 @@ export default function AdminPortal() {
   // Logout handler
   const handleLogout = async () => {
     if (firebaseAuth) await signOut(firebaseAuth);
+    authInitializationRef.current = null;
     setAuthUser(null);
     setRegisteredBusinesses([]);
     setDemoRequests([]);
@@ -876,6 +889,7 @@ export default function AdminPortal() {
           <DashboardPage
             registeredBusinesses={registeredBusinesses}
             demoRequests={demoRequests}
+            loadingData={loadingData}
             onNavigate={(target) => {
               setTab(target);
               if (target === 'registered') {

@@ -7,6 +7,7 @@ const { Text } = Typography;
 interface StatCardProps {
   title: string;
   value: number | string;
+  loading?: boolean;
   subtitle?: string;
   icon: LucideIcon;
   iconColor?: string;
@@ -21,6 +22,7 @@ interface StatCardProps {
 export const StatCard: React.FC<StatCardProps> = ({
   title,
   value,
+  loading = false,
   subtitle,
   icon: Icon,
   iconColor = '#7c3aed',
@@ -30,6 +32,7 @@ export const StatCard: React.FC<StatCardProps> = ({
 }) => {
   return (
     <Card
+      loading={loading}
       hoverable={Boolean(onClick)}
       onClick={onClick}
       bodyStyle={{ padding: '16px 20px' }}

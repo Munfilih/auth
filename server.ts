@@ -76,6 +76,7 @@ app.use((req, res, next) => {
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Max-Age', '600');
   }
   if (req.method === 'OPTIONS') {
     res.sendStatus(origin && allowedPortalOrigins.has(origin) ? 204 : 403);
@@ -2793,21 +2794,27 @@ app.get('/api/admin/demo-requests', async (_req, res, next) => {
     const systemCodes = [...new Set(snapshot.docs
       .map((document) => String(document.data().systemCode || '').trim().toUpperCase())
       .filter(isSystemCode))];
-    const licenseEntries = await Promise.all(systemCodes.map(async (systemCode) => {
-      const license = await db.collection('demoLicenses').doc(systemCodeId(systemCode)).get();
-      return [systemCode, license.data()] as const;
-    }));
-    const telemetryEntries = await Promise.all(systemCodes.map(async (systemCode) => {
-      const telemetry = await db.collection('demoSystemTelemetry').doc(systemCodeId(systemCode)).get();
-      return [systemCode, telemetry.data()] as const;
-    }));
-    const registeredEntries = await Promise.all(systemCodes.map(async (systemCode) => {
-      const registered = await db.collection('registeredSystems').doc(systemCodeId(systemCode)).get();
-      return [systemCode, registered.data()] as const;
-    }));
-    const licensesBySystemCode = new Map(licenseEntries);
-    const telemetryBySystemCode = new Map(telemetryEntries);
-    const registeredBySystemCode = new Map(registeredEntries);
+    const licensesBySystemCode = new Map<string, DocumentData | undefined>();
+    const telemetryBySystemCode = new Map<string, DocumentData | undefined>();
+    const registeredBySystemCode = new Map<string, DocumentData | undefined>();
+    if (systemCodes.length > 0) {
+      const [licenseDocs, telemetryDocs, registeredDocs] = await Promise.all([
+        db.getAll(...systemCodes.map((systemCode) =>
+          db.collection('demoLicenses').doc(systemCodeId(systemCode))
+        )),
+        db.getAll(...systemCodes.map((systemCode) =>
+          db.collection('demoSystemTelemetry').doc(systemCodeId(systemCode))
+        )),
+        db.getAll(...systemCodes.map((systemCode) =>
+          db.collection('registeredSystems').doc(systemCodeId(systemCode))
+        )),
+      ]);
+      systemCodes.forEach((systemCode, index) => {
+        licensesBySystemCode.set(systemCode, licenseDocs[index].data());
+        telemetryBySystemCode.set(systemCode, telemetryDocs[index].data());
+        registeredBySystemCode.set(systemCode, registeredDocs[index].data());
+      });
+    }
     const requests = snapshot.docs
       .map((document) => {
         const data = document.data();
