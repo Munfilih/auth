@@ -34,7 +34,7 @@ Open <http://127.0.0.1:3001> on the development computer or <http://192.168.1.11
 
 ## GitHub Pages
 
-The GitHub Actions workflow builds the Vite app (including the `/auth/` project-site base path) and deploys `dist/`. Add these repository variables under **Settings → Secrets and variables → Actions → Variables**: `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_APP_ID`, `VITE_ADMIN_LOGIN_EMAIL`, and `VITE_API_BASE_URL`. Firebase Auth and the admin's own Firestore record authorize sign-in; `VITE_API_BASE_URL` points to the HTTPS URL of the separately hosted Node API used for management operations. Add `https://munfilih.github.io` to that API's `ADMIN_PORTAL_ORIGINS`. GitHub Pages hosts only the frontend; it cannot run the Node API or hold Firebase Admin credentials.
+The GitHub Actions workflow builds the Vite app (including the `/auth/` project-site base path) and deploys `dist/`. Add these repository variables under **Settings → Secrets and variables → Actions → Variables**: `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_APP_ID`, `VITE_ADMIN_LOGIN_EMAIL`, and `VITE_API_BASE_URL`. `VITE_API_BASE_URL` must be the publicly reachable HTTPS URL of the separately hosted Node API; it cannot be blank, `localhost`, or a relative `/api` path. The Pages workflow fails before deployment if this variable is missing. Firebase Auth and the admin's own Firestore record authorize sign-in. Add `https://munfilih.github.io` to that API's `ADMIN_PORTAL_ORIGINS`. GitHub Pages hosts only the frontend; it cannot run the Node API or hold Firebase Admin credentials.
 
 ## aptPOS demo requests
 
