@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, AutoComplete, Button, Form, Input, Modal, Select, Space, Tag, Typography, message } from 'antd';
 import type {
-  DemoScreenType,
   DemoRequest,
   DeviceRegistrationLicense,
   RegisterDeviceInput,
@@ -17,7 +16,6 @@ interface RegisterDeviceModalProps {
   onLoadLicenses: () => Promise<DeviceRegistrationLicense[]>;
   onRegister: (input: RegisterDeviceInput) => Promise<RegisterDeviceResult>;
   initialSystemCode?: string;
-  initialScreenType?: DemoScreenType;
   demoRequestId?: string;
 }
 
@@ -28,7 +26,6 @@ export const RegisterDeviceModal: React.FC<RegisterDeviceModalProps> = ({
   onLoadLicenses,
   onRegister,
   initialSystemCode,
-  initialScreenType,
   demoRequestId,
 }) => {
   const [form] = Form.useForm<RegisterDeviceInput>();
@@ -76,7 +73,6 @@ export const RegisterDeviceModal: React.FC<RegisterDeviceModalProps> = ({
     form.resetFields();
     form.setFieldsValue({
       ...(initialSystemCode ? { systemCode: initialSystemCode } : {}),
-      screenType: initialScreenType || 'pos',
     });
     setLicenses([]);
     setErrorMessage('');
@@ -96,7 +92,7 @@ export const RegisterDeviceModal: React.FC<RegisterDeviceModalProps> = ({
     return () => {
       active = false;
     };
-  }, [form, initialScreenType, initialSystemCode, onLoadLicenses, open]);
+  }, [form, initialSystemCode, onLoadLicenses, open]);
 
   const handleSubmit = async (input: RegisterDeviceInput) => {
     setRegistering(true);
@@ -136,7 +132,7 @@ export const RegisterDeviceModal: React.FC<RegisterDeviceModalProps> = ({
       destroyOnClose
     >
       <Text type="secondary">
-        Assign a system code and screen mode to a commercial license with an available device slot.
+        Assign a system code to a commercial license with an available device slot.
       </Text>
 
       {errorMessage && (
@@ -163,7 +159,6 @@ export const RegisterDeviceModal: React.FC<RegisterDeviceModalProps> = ({
       <Form<RegisterDeviceInput>
         form={form}
         layout="vertical"
-        initialValues={{ screenType: 'pos' }}
         onFinish={(values) => void handleSubmit(values)}
         style={{ marginTop: 20 }}
       >
@@ -187,10 +182,6 @@ export const RegisterDeviceModal: React.FC<RegisterDeviceModalProps> = ({
             filterOption={(inputValue, option) =>
               String(option?.value || '').toUpperCase().includes(inputValue.trim().toUpperCase())
             }
-            onSelect={(value) => {
-              const request = demoRequestByCode.get(value.trim().toUpperCase());
-              if (request?.screenType) form.setFieldValue('screenType', request.screenType);
-            }}
             notFoundContent={demoSystemOptions.length ? 'No matching demo system codes' : null}
           >
             <Input
@@ -199,19 +190,6 @@ export const RegisterDeviceModal: React.FC<RegisterDeviceModalProps> = ({
               placeholder="e.g. 1029384756 or APT-XXXX-XXXX-XXXX-XXXX-XXXX"
             />
           </AutoComplete>
-        </Form.Item>
-
-        <Form.Item
-          name="screenType"
-          label="Screen Mode"
-          rules={[{ required: true, message: 'Choose a screen mode.' }]}
-        >
-          <Select
-            options={[
-              { value: 'pos', label: 'POS' },
-              { value: 'rpos', label: 'RPOS' },
-            ]}
-          />
         </Form.Item>
 
         <Form.Item

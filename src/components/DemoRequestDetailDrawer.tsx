@@ -23,7 +23,7 @@ import {
   RefreshCw,
   Copy,
 } from 'lucide-react';
-import type { AppVersion, DemoRequest, DemoScreenType, DemoSystemActivity } from '../types';
+import type { AppVersion, DemoRequest, DemoSystemActivity } from '../types';
 import { APP_VERSIONS } from '../types';
 import { StatusBadge } from './StatusBadge';
 
@@ -61,7 +61,7 @@ interface DemoRequestDetailDrawerProps {
   onReject: (request: DemoRequest) => Promise<void>;
   onUpdateConfiguration: (
     request: DemoRequest,
-    selection: { appVersion: AppVersion; screenType: DemoScreenType }
+    selection: { appVersion: AppVersion }
   ) => Promise<void>;
   onExtend: (request: DemoRequest) => Promise<void>;
   onDeactivate: (request: DemoRequest) => Promise<void>;
@@ -93,13 +93,11 @@ export const DemoRequestDetailDrawer: React.FC<DemoRequestDetailDrawerProps> = (
   onCopyKey,
 }) => {
   const [appVersion, setAppVersion] = useState<AppVersion>('Standard');
-  const [screenType, setScreenType] = useState<DemoScreenType>('pos');
 
   useEffect(() => {
     if (!request) return;
     setAppVersion(request.appVersion || 'Standard');
-    setScreenType(request.screenType || 'pos');
-  }, [request?.id, request?.appVersion, request?.screenType]);
+  }, [request?.id, request?.appVersion]);
 
   if (!request) return null;
 
@@ -256,25 +254,6 @@ export const DemoRequestDetailDrawer: React.FC<DemoRequestDetailDrawerProps> = (
             request.appVersion || '—'
           )}
         </Descriptions.Item>
-        <Descriptions.Item label="Screen Type">
-          {canEditConfiguration ? (
-            <Select<DemoScreenType>
-              value={screenType}
-              onChange={setScreenType}
-              options={[
-                { value: 'pos', label: 'POS — Standard Retail' },
-                { value: 'rpos', label: 'RPOS — Restaurant & Café' },
-              ]}
-              style={{ width: '100%' }}
-            />
-          ) : request.screenType === 'rpos' ? (
-            'RPOS — Restaurant & Café'
-          ) : request.screenType === 'pos' ? (
-            'POS — Standard Retail'
-          ) : (
-            '—'
-          )}
-        </Descriptions.Item>
         <Descriptions.Item label="Requested At">
           {formatDate(request.requestedAt)}
         </Descriptions.Item>
@@ -302,7 +281,7 @@ export const DemoRequestDetailDrawer: React.FC<DemoRequestDetailDrawerProps> = (
           <Button
             type="primary"
             icon={<RefreshCw size={14} />}
-            onClick={() => onUpdateConfiguration(request, { appVersion, screenType })}
+            onClick={() => onUpdateConfiguration(request, { appVersion })}
             loading={busy}
           >
             Update Demo User & Generate Key

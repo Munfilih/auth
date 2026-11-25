@@ -5,13 +5,9 @@ import {
   Col,
   Descriptions,
   Drawer,
-  Alert,
   Input,
-  Modal,
-  message,
   Popconfirm,
   Row,
-  Select,
   Space,
   Spin,
   Table,
@@ -31,11 +27,9 @@ import {
   ShieldCheck,
   Users,
   Plus,
-  Pencil,
 } from 'lucide-react';
 import type {
   DemoRequest,
-  DemoScreenType,
   DemoSystemActivity,
   DeviceHistoryEntry,
   DeviceLicenseHistoryEntry,
@@ -63,7 +57,6 @@ interface DeviceRecord {
   username: string;
   appVersion: string;
   licenseNumber?: string;
-  screenType?: DemoRequest['screenType'];
   isRegistered: boolean;
   registrationStatus: RegistrationStatus;
   blocked: boolean;
@@ -77,7 +70,6 @@ interface DeviceRecord {
 
 interface RegisterDeviceTarget {
   systemCode?: string;
-  screenType?: DemoRequest['screenType'];
   demoRequestId?: string;
 }
 
@@ -88,10 +80,6 @@ interface DeviceManagementPageProps {
   loading: boolean;
   onLoadActivity: (systemCode: string) => Promise<DemoSystemActivity>;
   onToggleBlock: (systemCode: string, blocked: boolean) => Promise<void>;
-  onChangeScreenType: (
-    systemCode: string,
-    screenType: DemoScreenType
-  ) => Promise<{ systemCode: string; screenType: DemoScreenType }>;
   onLoadRegistrationLicenses: () => Promise<DeviceRegistrationLicense[]>;
   onRegisterDevice: (input: RegisterDeviceInput) => Promise<RegisterDeviceResult>;
 }
@@ -132,12 +120,6 @@ function registrationLabel(status: RegistrationStatus): string {
   return 'Not registered';
 }
 
-function screenModeLabel(screenType?: DemoRequest['screenType']): string {
-  if (screenType === 'rpos') return 'RPOS';
-  if (screenType === 'pos') return 'POS';
-  return 'Unknown';
-}
-
 function licenseLabel(device: DeviceRecord): string {
   if (device.isRegistered) return device.licenseNumber || 'Legacy License';
   return device.demoRequest?.requestType === 'extension' ? 'Demo Extension' : 'Demo License';
@@ -166,7 +148,6 @@ function buildDevices(
         licenseNumber: business.licenseNumber,
         isRegistered: true,
         registrationStatus: system.status,
-        screenType: system.screenType,
         blocked: false,
         registeredAt: system.registeredAt,
         activatedAt: system.activatedAt,
@@ -194,7 +175,6 @@ function buildDevices(
     if (existing) {
       if (!existing.demoRequest) {
         existing.demoRequest = request;
-        if (!existing.isRegistered) existing.screenType = request.screenType;
       }
       if (request.registeredSystem) {
         existing.isRegistered = true;
@@ -209,7 +189,6 @@ function buildDevices(
       businessName: request.requestedBy || 'Demo device',
       username: request.requestedBy,
       appVersion: request.appVersion || request.registeredVersion || 'Standard',
-      screenType: request.screenType,
       isRegistered: request.registeredSystem,
       registrationStatus: request.registeredSystem
         ? request.registrationStatus || 'active'
@@ -295,7 +274,6 @@ export const DeviceManagementPage: React.FC<DeviceManagementPageProps> = ({
   loading,
   onLoadActivity,
   onToggleBlock,
-  onChangeScreenType,
   onLoadRegistrationLicenses,
   onRegisterDevice,
 }) => {
@@ -309,10 +287,6 @@ export const DeviceManagementPage: React.FC<DeviceManagementPageProps> = ({
   const [deviceHistoryOpen, setDeviceHistoryOpen] = useState(false);
   const [blockBusy, setBlockBusy] = useState(false);
   const [blockError, setBlockError] = useState('');
-  const [screenTypeModalOpen, setScreenTypeModalOpen] = useState(false);
-  const [screenTypeSelection, setScreenTypeSelection] = useState<DemoScreenType>('pos');
-  const [screenTypeBusy, setScreenTypeBusy] = useState(false);
-  const [screenTypeError, setScreenTypeError] = useState('');
   const [registerDeviceTarget, setRegisterDeviceTarget] = useState<RegisterDeviceTarget | null>(null);
 
   const devices = useMemo(
@@ -340,7 +314,6 @@ export const DeviceManagementPage: React.FC<DeviceManagementPageProps> = ({
         device.businessName,
         device.username,
         device.appVersion,
-        device.screenType,
         device.demoRequest?.hardwareInfo?.hostname,
         device.demoRequest?.hardwareInfo?.deviceModel,
       ].some((value) => value?.toLowerCase().includes(query));
@@ -390,27 +363,7 @@ export const DeviceManagementPage: React.FC<DeviceManagementPageProps> = ({
     setLoginHistoryOpen(false);
     setDeviceHistoryOpen(false);
     setBlockError('');
-    setScreenTypeModalOpen(false);
-    setScreenTypeError('');
     setSelectedDevice(null);
-  };
-
-  const handleUpdateScreenType = async () => {
-    if (!selectedDevice) return;
-    setScreenTypeBusy(true);
-    setScreenTypeError('');
-    try {
-      const result = await onChangeScreenType(selectedDevice.systemCode, screenTypeSelection);
-      setSelectedDevice((current) => current
-        ? { ...current, screenType: result.screenType }
-        : current);
-      setScreenTypeModalOpen(false);
-      message.success('Screen mode updated. The POS will apply it on its next status check.');
-    } catch (error) {
-      setScreenTypeError(error instanceof Error ? error.message : 'Could not update the screen mode.');
-    } finally {
-      setScreenTypeBusy(false);
-    }
   };
 
   const toggleSelectedDeviceBlock = async () => {
@@ -465,11 +418,6 @@ export const DeviceManagementPage: React.FC<DeviceManagementPageProps> = ({
       key: 'businessName',
     },
     {
-      title: 'Screen Mode',
-      key: 'screenType',
-      render: (_, device) => screenModeLabel(device.screenType),
-    },
-    {
       title: 'Device Status',
       key: 'deviceStatus',
       render: (_, device) => {
@@ -514,7 +462,7 @@ export const DeviceManagementPage: React.FC<DeviceManagementPageProps> = ({
     <div>
       <PageHeader
         title="Device Management"
-        subtitle="Review registered terminals and activated demo devices, including screen mode, hardware, and login history."
+        subtitle="Review registered terminals and activated demo devices, including hardware and login history."
         eyebrow="Device Operations"
         icon={MonitorCog}
         extra={
@@ -602,23 +550,6 @@ export const DeviceManagementPage: React.FC<DeviceManagementPageProps> = ({
                   </Tag>
                 </Descriptions.Item>
                 <Descriptions.Item label="Software Edition">{selectedDevice.appVersion}</Descriptions.Item>
-                <Descriptions.Item label="Screen Mode">
-                  <Space size={6}>
-                    <span>{screenModeLabel(selectedDevice.screenType)}</span>
-                    <Button
-                      type="link"
-                      size="small"
-                      icon={<Pencil size={13} />}
-                      onClick={() => {
-                        setScreenTypeSelection(selectedDevice.screenType || 'pos');
-                        setScreenTypeError('');
-                        setScreenTypeModalOpen(true);
-                      }}
-                    >
-                      Change
-                    </Button>
-                  </Space>
-                </Descriptions.Item>
                 <Descriptions.Item label="Registration Status">
                   <Tag color={selectedDevice.registrationStatus === 'active' ? 'green' : selectedDevice.registrationStatus === 'pending_activation' ? 'orange' : 'default'}>
                     {registrationLabel(selectedDevice.registrationStatus)}
@@ -689,7 +620,6 @@ export const DeviceManagementPage: React.FC<DeviceManagementPageProps> = ({
                       if (!demoRequest) return;
                       setRegisterDeviceTarget({
                         systemCode: selectedDevice.systemCode,
-                        screenType: selectedDevice.screenType,
                         demoRequestId: demoRequest.id,
                       });
                     }}
@@ -835,34 +765,6 @@ export const DeviceManagementPage: React.FC<DeviceManagementPageProps> = ({
         )}
       </Drawer>
 
-      <Modal
-        title={`Change Screen Mode · ${selectedDevice?.systemCode || ''}`}
-        open={screenTypeModalOpen}
-        confirmLoading={screenTypeBusy}
-        okText="Save Screen Mode"
-        cancelText="Cancel"
-        onOk={() => void handleUpdateScreenType()}
-        onCancel={() => {
-          if (!screenTypeBusy) setScreenTypeModalOpen(false);
-        }}
-        destroyOnClose
-      >
-        <Space direction="vertical" size={12} style={{ display: 'flex' }}>
-          <div>Select the screen layout this device should use.</div>
-          <Select
-            aria-label="Screen mode"
-            value={screenTypeSelection}
-            onChange={setScreenTypeSelection}
-            options={[
-              { value: 'pos', label: 'POS' },
-              { value: 'rpos', label: 'RPOS' },
-            ]}
-            style={{ width: '100%' }}
-          />
-          {screenTypeError && <Alert type="error" showIcon message={screenTypeError} />}
-        </Space>
-      </Modal>
-
       <RegisterDeviceModal
         open={Boolean(registerDeviceTarget)}
         onClose={() => setRegisterDeviceTarget(null)}
@@ -879,7 +781,6 @@ export const DeviceManagementPage: React.FC<DeviceManagementPageProps> = ({
           return result;
         }}
         initialSystemCode={registerDeviceTarget?.systemCode}
-        initialScreenType={registerDeviceTarget?.screenType}
         demoRequestId={registerDeviceTarget?.demoRequestId}
       />
     </div>

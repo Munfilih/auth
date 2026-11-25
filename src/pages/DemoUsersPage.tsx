@@ -50,7 +50,6 @@ export const DemoUsersPage: React.FC<DemoUsersPageProps> = ({
         r.requestedBy,
         r.requestType,
         r.appVersion,
-        r.screenType,
         r.hardwareInfo?.deviceModel,
         r.hardwareInfo?.deviceManufacturer,
       ].some((v) => v?.toLowerCase().includes(query));
@@ -98,14 +97,6 @@ export const DemoUsersPage: React.FC<DemoUsersPageProps> = ({
       dataIndex: 'appVersion',
       key: 'appVersion',
       render: (version?: string) => version || '—',
-    },
-    {
-      title: 'Screen Type',
-      dataIndex: 'screenType',
-      key: 'screenType',
-      render: (screenType?: string) => (
-        screenType === 'rpos' ? 'RPOS' : screenType === 'pos' ? 'POS' : '—'
-      ),
     },
     {
       title: 'Activation Status',

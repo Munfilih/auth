@@ -136,14 +136,14 @@ export interface DeviceRegistrationLicense {
 
 export interface RegisterDeviceInput {
   systemCode: string;
-  screenType: DemoScreenType;
+  screenType?: DemoScreenType;
   businessId: string;
   demoRequestId?: string;
 }
 
 export interface RegisterDeviceResult {
   systemCode: string;
-  screenType: DemoScreenType;
+  screenType?: DemoScreenType;
   businessId: string;
   businessName: string;
   availableSlots: number;

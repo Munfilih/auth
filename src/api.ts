@@ -3,7 +3,6 @@ import type {
   AppVersion,
   AppUser,
   DefaultCredentialAuditRecord,
-  DemoScreenType,
   DemoRequest,
   DemoSystemActivity,
   DeviceRegistrationLicense,
@@ -242,17 +241,6 @@ export async function unblockDeviceSystem(user: User, systemCode: string): Promi
   });
 }
 
-export async function updateDeviceScreenType(
-  user: User,
-  systemCode: string,
-  screenType: DemoScreenType
-): Promise<{ systemCode: string; screenType: DemoScreenType }> {
-  return request(`/api/admin/devices/${encodeURIComponent(systemCode)}/screen-type`, user, {
-    method: 'PATCH',
-    body: JSON.stringify({ screenType }),
-  });
-}
-
 export async function convertDemoSystemToRegistered(
   user: User,
   requestId: string,
@@ -278,7 +266,7 @@ export async function updateDemoRequestExpiry(
 export async function updateDemoRequestConfiguration(
   user: User,
   requestId: string,
-  selection: { appVersion: AppVersion; screenType: DemoScreenType }
+  selection: { appVersion: AppVersion }
 ): Promise<{ request: DemoRequest; demoKey: string }> {
   return request(`/api/admin/demo-requests/${encodeURIComponent(requestId)}/configuration`, user, {
     method: 'PATCH',
@@ -309,7 +297,7 @@ export async function reviewDemoRequest(
   user: User,
   id: string,
   status: 'approved' | 'rejected',
-  selection?: { appVersion: AppVersion; screenType: DemoScreenType }
+  selection?: { appVersion: AppVersion }
 ): Promise<ReviewedDemoRequest> {
   return request(`/api/admin/demo-requests/${encodeURIComponent(id)}`, user, {
     method: 'PATCH',

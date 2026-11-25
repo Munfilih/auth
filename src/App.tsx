@@ -32,7 +32,6 @@ import {
   getDefaultCredentialAudit,
   blockDeviceSystem,
   unblockDeviceSystem,
-  updateDeviceScreenType,
   getDeviceRegistrationLicenses,
   registerDevice,
   getRegisteredBusinesses,
@@ -66,7 +65,6 @@ import type { OAuthCredential, User } from 'firebase/auth';
 import type {
   AppVersion,
   DefaultCredentialAuditRecord,
-  DemoScreenType,
   DemoRequest,
   DemoSystemActivity,
   ReviewedDemoRequest,
@@ -137,7 +135,6 @@ export default function AdminPortal() {
   const [selectedDemoRequestId, setSelectedDemoRequestId] = useState<string | null>(null);
   const [demoApprovalRequest, setDemoApprovalRequest] = useState<DemoRequest | null>(null);
   const [demoApprovalVersion, setDemoApprovalVersion] = useState<AppVersion>('Standard');
-  const [demoApprovalScreenType, setDemoApprovalScreenType] = useState<DemoScreenType>('pos');
   const [expiryEditorRequest, setExpiryEditorRequest] = useState<DemoRequest | null>(null);
   const [expiryInput, setExpiryInput] = useState('');
   const [deleteDemoDataRequest, setDeleteDemoDataRequest] = useState<DemoRequest | null>(null);
@@ -373,16 +370,6 @@ export default function AdminPortal() {
     }
   }, [authUser]);
 
-  const handleUpdateDeviceScreenType = useCallback(async (
-    systemCode: string,
-    screenType: DemoScreenType
-  ) => {
-    if (!authUser) throw new Error('Your admin session has expired.');
-    const result = await updateDeviceScreenType(authUser, systemCode, screenType);
-    await loadData(authUser);
-    return result;
-  }, [authUser, loadData]);
-
   // Google Login handler
   const handleGoogleLogin = async () => {
     setLoginError('');
@@ -601,7 +588,7 @@ export default function AdminPortal() {
   const handleReviewDemoRequest = async (
     request: DemoRequest,
     status: 'approved' | 'rejected',
-    selection?: { appVersion: AppVersion; screenType: DemoScreenType }
+    selection?: { appVersion: AppVersion }
   ) => {
     if (!authUser) return;
     setActionBusy(true);
@@ -631,13 +618,12 @@ export default function AdminPortal() {
       return;
     }
     setDemoApprovalVersion('Standard');
-    setDemoApprovalScreenType('pos');
     setDemoApprovalRequest(request);
   };
 
   const handleUpdateDemoConfiguration = async (
     request: DemoRequest,
-    selection: { appVersion: AppVersion; screenType: DemoScreenType }
+    selection: { appVersion: AppVersion }
   ) => {
     if (!authUser) return;
     setActionBusy(true);
@@ -918,7 +904,6 @@ export default function AdminPortal() {
             loading={loadingData}
             onLoadActivity={handleLoadDeviceActivity}
             onToggleBlock={handleToggleDeviceBlock}
-            onChangeScreenType={handleUpdateDeviceScreenType}
             onLoadRegistrationLicenses={handleLoadDeviceRegistrationLicenses}
             onRegisterDevice={handleRegisterDevice}
           />
@@ -1064,7 +1049,6 @@ export default function AdminPortal() {
           if (!demoApprovalRequest) return;
           return handleReviewDemoRequest(demoApprovalRequest, 'approved', {
             appVersion: demoApprovalVersion,
-            screenType: demoApprovalScreenType,
           });
         }}
         onCancel={() => {
@@ -1076,7 +1060,7 @@ export default function AdminPortal() {
       >
         <div style={{ display: 'grid', gap: 16, marginTop: 16 }}>
           <p style={{ margin: 0, color: '#64748b', fontSize: 13 }}>
-            The demo will be restricted to the selected edition and POS screen layout.
+            The demo will be restricted to the selected software edition.
           </p>
           <label style={{ display: 'grid', gap: 6, color: '#334155', fontSize: 13, fontWeight: 600 }}>
             Software Version
@@ -1084,17 +1068,6 @@ export default function AdminPortal() {
               value={demoApprovalVersion}
               onChange={setDemoApprovalVersion}
               options={APP_VERSIONS.map((version) => ({ value: version, label: version }))}
-            />
-          </label>
-          <label style={{ display: 'grid', gap: 6, color: '#334155', fontSize: 13, fontWeight: 600 }}>
-            Screen Type
-            <Select<DemoScreenType>
-              value={demoApprovalScreenType}
-              onChange={setDemoApprovalScreenType}
-              options={[
-                { value: 'pos', label: 'POS — Standard Retail Terminal' },
-                { value: 'rpos', label: 'RPOS — Restaurant & Café Touch POS' },
-              ]}
             />
           </label>
         </div>

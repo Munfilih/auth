@@ -492,11 +492,13 @@ app.post('/api/registration/demo-status-check', async (req, res, next) => {
         throw new Error('The registered system has an invalid app version.');
       }
       const businessData = registeredBusinessData;
+      const licenseNumber = getBusinessLicenseNumber(businessData);
       const registrationDetails = businessData
         ? {
             businessName: String(businessData.businessName || ''),
             address: String(businessData.address || ''),
             mobileNumber: String(businessData.mobileNumber || ''),
+            ...(licenseNumber !== undefined ? { licenseNumber } : {}),
             systemCode,
             username: String(businessData.username || registeredData.username || ''),
             appVersion,
@@ -1027,6 +1029,20 @@ function decryptRegistrationPayload(value: unknown): string {
   ]).toString('utf8');
 }
 
+function getBusinessLicenseNumber(businessData: unknown): string | undefined {
+  if (
+    typeof businessData !== 'object' ||
+    businessData === null ||
+    !('licenseKeyCiphertext' in businessData)
+  ) {
+    return undefined;
+  }
+  const ciphertext = businessData.licenseKeyCiphertext;
+  return typeof ciphertext === 'object' && ciphertext !== null
+    ? decryptRegistrationPayload(ciphertext)
+    : undefined;
+}
+
 function decryptRegistrationCredentials(value: unknown): { username: string; password: string } {
   const credentials: unknown = JSON.parse(decryptRegistrationPayload(value));
   if (
@@ -1262,11 +1278,13 @@ app.post('/api/registration/key/prepare', async (req, res, next) => {
     const username = typeof businessData?.username === 'string'
       ? businessData.username
       : typeof data.username === 'string' ? data.username : '';
+    const licenseNumber = getBusinessLicenseNumber(businessData);
     const registrationDetails = businessData
       ? {
           businessName: String(businessData.businessName || ''),
           address: String(businessData.address || ''),
           mobileNumber: String(businessData.mobileNumber || ''),
+          ...(licenseNumber !== undefined ? { licenseNumber } : {}),
           systemCode,
           username,
           appVersion,
@@ -1430,6 +1448,7 @@ app.post('/api/registration/key/activate', async (req, res, next) => {
       } else if (data.status !== 'active') {
         throw new PortalRequestError(409, 'This registration is no longer available.');
       }
+      const licenseNumber = getBusinessLicenseNumber(businessData);
       return {
         registered: true as const,
         appVersion,
@@ -1438,6 +1457,7 @@ app.post('/api/registration/key/activate', async (req, res, next) => {
             businessName: String(businessData.businessName || ''),
             address: String(businessData.address || ''),
             mobileNumber: String(businessData.mobileNumber || ''),
+            ...(licenseNumber !== undefined ? { licenseNumber } : {}),
             systemCode,
             username: String(businessData.username || ''),
             appVersion,
@@ -3076,15 +3096,14 @@ app.post('/api/admin/devices/register', async (req, res, next) => {
       ? req.body.systemCode.trim().toUpperCase()
       : '';
     const businessId = typeof req.body?.businessId === 'string' ? req.body.businessId.trim() : '';
-    const screenType = parseDemoScreenType(req.body?.screenType);
     const demoRequestId = typeof req.body?.demoRequestId === 'string'
       ? req.body.demoRequestId.trim()
       : '';
     if (!isSystemCode(systemCode)) {
       throw new PortalRequestError(400, 'Enter a valid device system code.');
     }
-    if (!businessId || !screenType) {
-      throw new PortalRequestError(400, 'Choose a commercial license and screen mode.');
+    if (!businessId) {
+      throw new PortalRequestError(400, 'Choose a commercial license.');
     }
     if (demoRequestId && !/^[A-Za-z0-9_-]{1,128}$/.test(demoRequestId)) {
       throw new PortalRequestError(400, 'The demo request is invalid.');
@@ -3216,7 +3235,6 @@ app.post('/api/admin/devices/register', async (req, res, next) => {
         systemCode,
         appVersion,
         username: String(business.username || ''),
-        screenType,
         status: 'pending_activation',
         registeredAt,
         activatedAt: null,
@@ -3254,7 +3272,6 @@ app.post('/api/admin/devices/register', async (req, res, next) => {
 
     res.status(201).json({
       systemCode,
-      screenType,
       businessId,
       businessName,
       availableSlots,
@@ -3274,57 +3291,6 @@ app.get('/api/admin/devices/blocks', async (_req, res, next) => {
       .filter((systemCode): systemCode is string => isSystemCode(systemCode))
       .map((systemCode) => systemCode.trim().toUpperCase());
     res.json({ blockedSystemCodes });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.patch('/api/admin/devices/:systemCode/screen-type', async (req, res, next) => {
-  try {
-    const systemCode = typeof req.params.systemCode === 'string'
-      ? req.params.systemCode.trim().toUpperCase()
-      : '';
-    const screenType = parseDemoScreenType(req.body?.screenType);
-    if (!isSystemCode(systemCode)) {
-      throw new PortalRequestError(400, 'Enter a valid device system code.');
-    }
-    if (!screenType) {
-      throw new PortalRequestError(400, 'Choose POS or RPOS as the screen mode.');
-    }
-
-    const { db } = getServices();
-    const systemRef = db.collection('registeredSystems').doc(systemCodeId(systemCode));
-    const licenseRef = db.collection('demoLicenses').doc(systemCodeId(systemCode));
-    await db.runTransaction(async (transaction) => {
-      const [systemSnapshot, licenseSnapshot] = await Promise.all([
-        transaction.get(systemRef),
-        transaction.get(licenseRef),
-      ]);
-      const systemData = systemSnapshot.data();
-      const isRegistered = systemSnapshot.exists &&
-        (systemData?.status === 'active' || systemData?.status === 'pending_activation');
-
-      if (isRegistered) {
-        transaction.update(systemRef, { screenType });
-        return;
-      }
-
-      if (!licenseSnapshot.exists) {
-        throw new PortalRequestError(404, 'No registered or activated demo device was found for this system code.');
-      }
-
-      const licenseData = licenseSnapshot.data();
-      const requestId = typeof licenseData?.requestId === 'string' ? licenseData.requestId : '';
-      const requestRef = requestId ? db.collection('demoRequests').doc(requestId) : null;
-      const requestSnapshot = requestRef ? await transaction.get(requestRef) : null;
-
-      transaction.set(licenseRef, { screenType }, { merge: true });
-      if (requestRef && requestSnapshot?.exists && requestSnapshot.data()?.systemCode === systemCode) {
-        transaction.update(requestRef, { screenType });
-      }
-    });
-
-    res.json({ systemCode, screenType });
   } catch (error) {
     next(error);
   }
@@ -3504,7 +3470,6 @@ app.patch('/api/admin/demo-requests/:id', async (req, res, next) => {
     const selectedAppVersion = APP_VERSIONS.find(
       (version) => version === req.body?.appVersion
     );
-    const selectedScreenType = parseDemoScreenType(req.body?.screenType);
 
     const { db } = getServices();
     const requestRef = db.collection('demoRequests').doc(req.params.id);
@@ -3521,7 +3486,7 @@ app.patch('/api/admin/demo-requests/:id', async (req, res, next) => {
       if (requestData?.status !== 'pending') {
         throw new PortalRequestError(409, 'This demo request has already been reviewed.');
       }
-      let approvalSelection: { appVersion: AppVersion; screenType: DemoScreenType } | undefined;
+      let approvalSelection: { appVersion: AppVersion } | undefined;
 
       if (status === 'approved' && requestData?.requestType === 'extension') {
         const licenseRef = db.collection('demoLicenses').doc(
@@ -3538,18 +3503,13 @@ app.patch('/api/admin/demo-requests/:id', async (req, res, next) => {
             APP_VERSIONS.find((version) => version === licenseData?.appVersion) ||
             APP_VERSIONS.find((version) => version === requestData?.appVersion) ||
             'Standard',
-          screenType:
-            parseDemoScreenType(licenseData?.screenType) ||
-            parseDemoScreenType(requestData?.screenType) ||
-            'pos',
         };
       } else if (status === 'approved') {
-        if (!selectedAppVersion || !selectedScreenType) {
-          throw new PortalRequestError(400, 'Choose a software version and screen type before approving this demo.');
+        if (!selectedAppVersion) {
+          throw new PortalRequestError(400, 'Choose a software version before approving this demo.');
         }
         approvalSelection = {
           appVersion: selectedAppVersion,
-          screenType: selectedScreenType,
         };
       }
 
@@ -3590,9 +3550,8 @@ app.patch('/api/admin/demo-requests/:id', async (req, res, next) => {
 app.patch('/api/admin/demo-requests/:id/configuration', async (req, res, next) => {
   try {
     const appVersion = APP_VERSIONS.find((version) => version === req.body?.appVersion);
-    const screenType = parseDemoScreenType(req.body?.screenType);
-    if (!appVersion || !screenType) {
-      res.status(400).json({ error: 'Choose a valid software version and screen type.' });
+    if (!appVersion) {
+      res.status(400).json({ error: 'Choose a valid software version.' });
       return;
     }
 
@@ -3629,12 +3588,11 @@ app.patch('/api/admin/demo-requests/:id/configuration', async (req, res, next) =
       ]);
       const registeredStatus = registeredSnapshot.data()?.status;
       if (registeredStatus === 'active' || registeredStatus === 'pending_activation') {
-        throw new PortalRequestError(409, 'Registered systems cannot use demo version or screen settings.');
+        throw new PortalRequestError(409, 'Registered systems cannot use demo version settings.');
       }
 
       const configurationUpdate = {
         appVersion,
-        screenType,
         configurationUpdatedAt: FieldValue.serverTimestamp(),
         configurationUpdatedBy: adminUid,
       };
@@ -3672,7 +3630,7 @@ app.patch('/api/admin/demo-requests/:id/configuration', async (req, res, next) =
       if (licenseSnapshot.exists && licenseSnapshot.data()?.revoked !== true) {
         transaction.set(
           licenseRef,
-          { appVersion, screenType, activationRequired: true },
+          { appVersion, activationRequired: true },
           { merge: true }
         );
       }
