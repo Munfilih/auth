@@ -474,7 +474,7 @@ export const DemoRequestDetailDrawer: React.FC<DemoRequestDetailDrawerProps> = (
           License Actions
         </Text>
 
-        <Space wrap orientation="horizontal" size={8}>
+        <Space wrap direction="horizontal" size={8}>
           {request.status === 'rejected' && request.deactivatedAt && (
             <Popconfirm
               title="Reactivate Demo?"

@@ -178,7 +178,7 @@ export const RegisteredBusinessesPage: React.FC<RegisteredBusinessesPageProps> =
           return <span style={{ color: '#94a3b8', fontSize: 12 }}>None</span>;
         }
         return (
-          <Space orientation="horizontal" size={4} wrap>
+          <Space direction="horizontal" size={4} wrap>
             {codes.map((item) => (
               <Tooltip key={item.systemCode} title={`Status: ${item.status}`}>
                 <code

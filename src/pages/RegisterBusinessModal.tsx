@@ -118,7 +118,7 @@ export const RegisterBusinessModal: React.FC<RegisterBusinessModalProps> = ({
       width={820}
       footer={null}
       closable={!registrationResult && !busy}
-      mask={{ closable: !registrationResult && !busy }}
+      maskClosable={!registrationResult && !busy}
       keyboard={!registrationResult && !busy}
     >
       {registrationResult ? (

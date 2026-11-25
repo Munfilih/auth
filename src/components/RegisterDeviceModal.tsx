@@ -141,7 +141,7 @@ export const RegisterDeviceModal: React.FC<RegisterDeviceModalProps> = ({
 
       {errorMessage && (
         <Alert
-          title={errorMessage}
+          message={errorMessage}
           type="error"
           showIcon
           closable
@@ -152,7 +152,7 @@ export const RegisterDeviceModal: React.FC<RegisterDeviceModalProps> = ({
 
       {!licensesLoading && !errorMessage && availableLicenses === 0 && (
         <Alert
-          title="No license keys have available system slots."
+          message="No license keys have available system slots."
           description="Register a business with additional system capacity, or remove a registered device from a license."
           type="warning"
           showIcon
